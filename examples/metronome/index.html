@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nc-clock metronome</title>
+  <style>
+    body { font: 16px/1.4 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
+    button { font: inherit; padding: .4rem 1rem; margin-right: .5rem; }
+    #beat { font-size: 3rem; font-variant-numeric: tabular-nums; margin: 1rem 0; }
+    #status { color: #666; white-space: pre-line; }
+  </style>
+</head>
+<body>
+  <h1>nc-clock metronome</h1>
+  <p>Open this page in two tabs. Press Play in either: both click together. Change the tempo in one; the other follows.</p>
+  <p>
+    <button id="play">Play</button><button id="stop">Stop</button>
+    <label>BPM <input id="bpm" type="number" min="20" max="300" value="120" style="width:5rem"></label>
+  </p>
+  <div id="beat">–</div>
+  <div id="status">Not joined.</div>
+  <p><small>nc-clock was created by <a href="https://psem.me/">Peter Semmelhack</a>.</small></p>
+  <script type="module" src="./metronome.js"></script>
+</body>
+</html>

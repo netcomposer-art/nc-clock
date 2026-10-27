@@ -1,0 +1,70 @@
+{
+  "name": "@netcomposer/nc-clock",
+  "version": "0.2.0",
+  "description": "A universal, dependency-free beat clock and the NC Sync v1 protocol, so browser music apps can play in time together.",
+  "license": "MIT",
+  "author": {
+    "name": "Peter Semmelhack",
+    "url": "https://psem.me/"
+  },
+  "homepage": "https://github.com/netcomposer-art/nc-clock",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/netcomposer-art/nc-clock.git"
+  },
+  "bugs": {
+    "url": "https://github.com/netcomposer-art/nc-clock/issues"
+  },
+  "keywords": [
+    "web-audio",
+    "audioworklet",
+    "tempo",
+    "beat-clock",
+    "sync",
+    "music",
+    "broadcastchannel",
+    "nc-sync"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "AUTHORS"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js",
+    "example": "npm run build && node examples/serve.mjs",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
