@@ -104,3 +104,28 @@ test('ready: started on a suspended context, the first resume re-measures', () =
   assert.equal(m.ready, true);
   m.stop();
 });
+
+test('stop(): resets the revert window and the pause record', () => {
+  const d = device();
+  const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
+  const internal = m as unknown as { revertUntil: number; pausedCtx: number | null; pausedWall: number };
+  run(d, m, 2500);
+  d.shift = 0.01;
+  run(d, m, 150);                                  // confirmed: a revert window opens (200 ms of audio clock time)
+  assert.equal(m.reanchors, 1);
+  assert.ok(Number.isFinite(internal.revertUntil), 'window open');
+  m.stop();
+  assert.equal(internal.revertUntil, -Infinity, 'stop() closes the revert window');
+  d.shift = 0;                                     // back at the old anchor, still inside the old window's time
+  run(d, m, 150);
+  assert.equal(m.reverts, 0, 'not a revert of a window from before stop()');
+  assert.equal(m.reanchors, 2, 'a new step');
+  // The pause record: suspended (recorded) and then stopped.
+  m.start();
+  d.state = 'suspended'; d.emit('statechange');
+  assert.notEqual(internal.pausedCtx, null);
+  m.stop();
+  assert.equal(internal.pausedCtx, null, 'stop() drops the pause record');
+  assert.equal(internal.pausedWall, 0);
+  d.state = 'running';
+});

@@ -415,6 +415,10 @@ export class AudioClockMapper {
     if (this.stepTimer) clearInterval(this.stepTimer);
     this.stepTimer = null;
     this.clearPending();
+    // No revert window or pause record survives a stop: after a restart, a reading back at an old anchor is a new
+    // step, and a resume is judged from the next pause seen while started.
+    this.revertUntil = -Infinity;
+    this.pausedCtx = null; this.pausedWall = 0;
     this.ctx.removeEventListener?.('sinkchange', this.onSink);
     this.ctx.removeEventListener?.('statechange', this.onState);
   }

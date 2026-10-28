@@ -45,6 +45,8 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 - `NcSyncPeer` forgets a peer's message sequence number when that peer times out (a tab closed without `bye`) and
   on `stop()`. Before, one entry (about 100 B) per closed tab stayed for the life of the page. Found in ASTRID's
   multi-tab crash soak (NetComposer-Synth fix/crash-soak 7ea28c8).
+- `AudioClockMapper.stop()` also closes an open revert window and drops the pause record, so after a restart a
+  reading back at an old anchor is a new step, not a revert of a window from before the stop. Found in review (Zeta).
 
 ### Migration (consumers)
 Checked against OLIVE Bass `apps/bass/src/app/sync-clock.test.ts` (psemmelhack/ASTRID-Bass, branch
