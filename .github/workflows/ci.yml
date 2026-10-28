@@ -21,3 +21,24 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+  e2e:
+    # Three real tabs in headless Chromium (BroadcastChannel + Web Locks + Web Audio): independent Stop, a Play in a
+    # tab that does not lead, the leader handoff, and the sync gate on real scheduled notes (test/e2e/three-tab.mjs).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # playwright-core is not a dependency of the package: install it for this job only.
+      - run: npm install --no-save playwright-core@1.56.1
+      - run: npx playwright-core install --with-deps chromium-headless-shell
+      - run: npm run e2e
+      - name: negative control (B's notes 4 ms late must fail the sync gate)
+        run: |
+          SKEW_MS=4 npm run e2e > negative.txt 2>&1 || true
+          cat negative.txt
+          grep -q '^FAIL sync gate' negative.txt
