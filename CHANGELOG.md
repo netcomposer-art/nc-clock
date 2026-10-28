@@ -31,6 +31,9 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 - `AudioClockMapper.sample()` keeps one sample per output timestamp. `start()` and the first `sampleIfNotReady()`
   in the same task read the same stamp, and it counted twice, so `ready` came after two real readings instead of
   three. Found by Olive (OLIVE Bass).
+- `NcSyncPeer` forgets a peer's message sequence number when that peer times out (a tab closed without `bye`) and
+  on `stop()`. Before, one entry (about 100 B) per closed tab stayed for the life of the page. Found in ASTRID's
+  multi-tab crash soak (NetComposer-Synth fix/crash-soak 7ea28c8).
 
 ## [0.3.0] - Unreleased
 
