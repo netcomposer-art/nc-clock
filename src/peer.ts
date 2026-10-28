@@ -283,14 +283,18 @@ export class NcSyncPeer implements ClockAuthority {
   /**
    * ClockAuthority: local Stop. With `independentStop` (and no `all`) it stops only this instrument: a local state
    * change plus a heartbeat, no transport request. The leader ends the session once no instrument plays.
-   * `all: true` is a session stop for everyone, as before.
+   * `all: true` is a session stop for everyone, as before. In a mixed session (any known peer without
+   * `independentStop`) every Stop is a session stop for everyone again (without `all`), the 0.4.0 behaviour.
    */
   requestStop(request: StopRequest): void {
     if (!this.leader && !this.knownLeader()) this.becomeLeaderIfAlone();
     if (this.indep) {
       const now = this.o.now();
       this.setMember(false, Math.max(now, request.at ?? now));
-      if (!request.all) return;
+      // Mixed session (a peer without independentStop is here): Stop is the session stop for everyone, as in 0.4.0
+      // and earlier, but not `all` (no stopAll: free-running parts such as a latched arp keep their state). Decided
+      // per Stop from the peers known now, so it follows the peer set as peers come and go.
+      if (!request.all && !this.mixedSession()) return;
     }
     if (this.leader) { this.decideStop(request.all ?? false); return; }
     this.send({ type: 'transport', action: 'stop', all: request.all ?? false });
@@ -359,6 +363,11 @@ export class NcSyncPeer implements ClockAuthority {
   private anyMemberPlaying(): boolean {
     if (this.clock.playing) return true;
     for (const p of this.peers.values()) if (!p.independentStop || p.playing === true) return true;
+    return false;
+  }
+  /** A known peer lacks independentStop: Stop falls back to the session stop for everyone. */
+  private mixedSession(): boolean {
+    for (const p of this.peers.values()) if (!p.independentStop) return true;
     return false;
   }
   /** Does `p` play (for election)? Older peers play whenever the session runs. */

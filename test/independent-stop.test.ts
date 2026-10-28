@@ -245,54 +245,87 @@ test('stop({ all: true }) is still a session stop for everyone (stopAll + endSes
   for (const t of [a, b, c]) t.peer.stop();
 });
 
-test('mixed versions: an older peer\'s Stop stops everyone; new Stops never end a session an older peer plays in', async () => {
-  const now = { t: 6000 };
-  const h = hub();
-  const a = tab(h, 'a-new', now); await a.peer.start(); await flush();
-  now.t += 1;
-  const old = tab(h, 'b-old', now, { indep: false }); await old.peer.start(); await flush(); // 0.4.0 wire and behaviour (no independentStop)
-  now.t += 1;
-  const c = tab(h, 'c-new', now); await c.peer.start(); await flush();
-  assert.ok(!h.log.some(m => m.from === 'b-old' && ('playing' in m || 'independentStop' in m)), 'the old peer speaks the 0.4.0 wire');
-  assert.equal(a.peer.peers.get('b-old')?.playing, null);
-  a.clock.play({ at: now.t }); await flush();
-  c.clock.play({ at: now.t }); await flush();
-  assert.equal(old.clock.playing, true, 'an older peer plays whenever the session does (as today)');
-  a.clock.stop({ at: now.t }); c.clock.stop({ at: now.t }); await flush();
-  assert.equal(a.clock.transport.running, true, 'the older peer is still playing');
-  assert.deepEqual(leaderOf(a, old, c), ['a-new'], 'mixed session keeps the 0.4.0 ranking: one leader, no handoff');
-  c.clock.play({ at: now.t }); await flush();
-  now.t += 0.6; old.clock.stop({ at: now.t }); await flush();
-  const last = states(h).at(-1)!;
-  assert.equal(last.endSession, true);
-  for (const t of [a, old, c]) { assert.equal(t.clock.transport.running, false); assert.equal(t.clock.playing, false, `${t.peer.id} stopped`); }
-  // An older peer's Play on a running session is a Join too (the new leader never restarts the grid).
-  c.clock.play({ at: now.t }); await flush();
-  const start = a.clock.transport.startTime;
-  now.t += 1.3; old.clock.play({ at: now.t }); await flush();
-  assert.equal(a.clock.transport.startTime, start);
-  for (const t of [a, old, c]) t.peer.stop();
-});
+for (const locks of [false, true]) {
+  const sfx = locks ? ' (Web Locks)' : '';
+  test(`mixed versions: a new peer's Stop stops everyone (the 0.4.0 session stop, not all); an older peer's too${sfx}`, async () => {
+    const now = { t: 6000 };
+    const h = hub();
+    const L = locks ? fakeLocks() : null;
+    const a = tab(h, 'a-new', now, { locks: L }); await a.peer.start(); await flush();
+    now.t += 1;
+    const old = tab(h, 'b-old', now, { indep: false, locks: L }); await old.peer.start(); await flush(); // 0.4.0 wire and behaviour (no independentStop)
+    now.t += 1;
+    const c = tab(h, 'c-new', now, { locks: L }); await c.peer.start(); await flush(60);
+    assert.ok(!h.log.some(m => m.from === 'b-old' && ('playing' in m || 'independentStop' in m)), 'the old peer speaks the 0.4.0 wire');
+    assert.equal(a.peer.peers.get('b-old')?.playing, null);
+    assert.deepEqual(leaderOf(a, old, c), ['a-new']);
+    const stopAllSeen = () => h.log.some(m => m.type === 'state' && m.stopAll) || h.log.some(m => m.type === 'transport' && (m as { all?: boolean }).all);
+    // 1. The new leader's Stop.
+    a.clock.play({ at: now.t }); await flush(60);
+    c.clock.play({ at: now.t }); await flush(60);
+    assert.equal(old.clock.playing, true, 'an older peer plays whenever the session does (as today)');
+    now.t += 1; a.clock.stop({ at: now.t }); await flush(60);
+    for (const t of [a, old, c]) { assert.equal(t.clock.transport.running, false, `${t.peer.id}: stopped`); assert.equal(t.clock.playing, false, `${t.peer.id} stopped`); }
+    assert.equal(states(h).at(-1)!.endSession, true, 'a session stop for everyone');
+    assert.ok(!stopAllSeen(), 'not `all`: free-running parts (a latched arp) keep their state');
+    assert.ok(!c.changes.some(x => x.kind === 'stop' && x.all));
+    assert.deepEqual(leaderOf(a, old, c), ['a-new'], 'mixed session keeps the 0.4.0 ranking: one leader, no handoff');
+    // 2. A new follower's Stop (a transport stop request to the leader, as in 0.4.0).
+    now.t += 1; a.clock.play({ at: now.t }); await flush(60);
+    c.clock.play({ at: now.t }); await flush(60);
+    now.t += 1; c.clock.stop({ at: now.t }); await flush(60);
+    for (const t of [a, old, c]) { assert.equal(t.clock.transport.running, false, `${t.peer.id}: stopped by C`); assert.equal(t.clock.playing, false); }
+    assert.ok(!stopAllSeen());
+    // 3. The older peer's Stop stops everyone; its Play on a running session is a Join (no restart).
+    now.t += 1; c.clock.play({ at: now.t }); await flush(60);
+    a.clock.play({ at: now.t }); await flush(60);
+    const start = a.clock.transport.startTime;
+    now.t += 1.3; old.clock.play({ at: now.t }); await flush(60);
+    assert.equal(a.clock.transport.startTime, start, 'the old peer joined');
+    now.t += 0.6; old.clock.stop({ at: now.t }); await flush(60);
+    assert.equal(states(h).at(-1)!.endSession, true);
+    for (const t of [a, old, c]) { assert.equal(t.clock.transport.running, false); assert.equal(t.clock.playing, false, `${t.peer.id} stopped`); }
+    // 4. The peer set changes: once the older peer leaves, Stop is per instrument again.
+    old.peer.stop(); await flush(60);
+    now.t += 1; a.clock.play({ at: now.t }); await flush(60);
+    c.clock.play({ at: now.t }); await flush(60);
+    now.t += 1; c.clock.stop({ at: now.t }); await flush(60);
+    assert.ok(a.clock.playing && a.clock.transport.running && !c.clock.playing, 'C stopped alone');
+    assert.equal(c.clock.transport.running, true);
+    // ... and a newcomer without the capability makes it a session stop again.
+    const old2 = tab(h, 'd-old', now, { indep: false, locks: L }); await old2.peer.start(); await flush(60);
+    now.t += 1; c.clock.play({ at: now.t }); await flush(60);
+    now.t += 1; c.clock.stop({ at: now.t }); await flush(60);
+    for (const t of [a, c, old2]) assert.equal(t.clock.transport.running, false, `${t.peer.id}: stopped again`);
+    assert.equal(a.clock.playing, false);
+    for (const t of [a, c, old2]) t.peer.stop();
+  });
 
-test('mixed versions: an older leader with new followers', async () => {
-  const now = { t: 7000 };
-  const h = hub();
-  const old = tab(h, 'a-old', now, { indep: false, prefersLeader: true }); await old.peer.start(); await flush();
-  const b = tab(h, 'b-new', now); await b.peer.start(); await flush();
-  const c = tab(h, 'c-new', now); await c.peer.start(); await flush();
-  assert.deepEqual(leaderOf(old, b, c), ['a-old']);
-  b.clock.play({ at: now.t }); await flush();
-  assert.equal(old.clock.transport.running, true, 'the old leader started the session');
-  c.clock.play({ at: now.t }); await flush();
-  const start = old.clock.transport.startTime;
-  assert.equal(c.clock.transport.startTime, start, 'C joined without a restart request');
-  b.clock.stop({ at: now.t }); await flush();
-  assert.ok(old.clock.transport.running && c.clock.playing, 'B stopped alone');
-  assert.equal(transportMsgs(h).filter(m => (m as { action: string }).action === 'stop').length, 0);
-  now.t += 1; old.clock.stop({ at: now.t }); await flush();
-  for (const t of [b, c]) assert.equal(t.clock.playing, false, `${t.peer.id}: the old leader's Stop stops everyone`);
-  for (const t of [old, b, c]) t.peer.stop();
-});
+  test(`mixed versions: an older leader's Stop stops everyone, and so does a new follower's${sfx}`, async () => {
+    const now = { t: 7000 };
+    const h = hub();
+    const L = locks ? fakeLocks() : null;
+    const old = tab(h, 'a-old', now, { indep: false, prefersLeader: true, locks: L }); await old.peer.start(); await flush();
+    const b = tab(h, 'b-new', now, { locks: L }); await b.peer.start(); await flush();
+    const c = tab(h, 'c-new', now, { locks: L }); await c.peer.start(); await flush(60);
+    assert.deepEqual(leaderOf(old, b, c), ['a-old']);
+    b.clock.play({ at: now.t }); await flush(60);
+    assert.equal(old.clock.transport.running, true, 'the old leader started the session');
+    c.clock.play({ at: now.t }); await flush(60);
+    const start = old.clock.transport.startTime;
+    assert.equal(c.clock.transport.startTime, start, 'C joined without a restart request');
+    // A new follower's Stop: a session stop for everyone (the old leader stops it, as in 0.4.0).
+    now.t += 1; b.clock.stop({ at: now.t }); await flush(60);
+    for (const t of [old, b, c]) { assert.equal(t.clock.transport.running, false, `${t.peer.id}: stopped by B`); assert.equal(t.clock.playing, false); }
+    assert.ok(transportMsgs(h).some(m => m.from === 'b-new' && (m as { action: string; all?: boolean }).action === 'stop' && !(m as { all?: boolean }).all), 'a plain stop request, not all');
+    // The old leader's own Stop.
+    now.t += 1; b.clock.play({ at: now.t }); await flush(60);
+    c.clock.play({ at: now.t }); await flush(60);
+    now.t += 1; old.clock.stop({ at: now.t }); await flush(60);
+    for (const t of [old, b, c]) { assert.equal(t.clock.transport.running, false); assert.equal(t.clock.playing, false, `${t.peer.id}: the old leader's Stop stops everyone`); }
+    for (const t of [old, b, c]) t.peer.stop();
+  });
+}
 
 test('a playing peer that vanishes is counted out: the session ends without it', async () => {
   const now = { t: 8000 };
