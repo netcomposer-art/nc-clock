@@ -46,6 +46,31 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
   on `stop()`. Before, one entry (about 100 B) per closed tab stayed for the life of the page. Found in ASTRID's
   multi-tab crash soak (NetComposer-Synth fix/crash-soak 7ea28c8).
 
+### Migration (consumers)
+Checked against OLIVE Bass `apps/bass/src/app/sync-clock.test.ts` (psemmelhack/ASTRID-Bass, branch
+olive/bass-css-nc-clock at 7bad965, vitest). On 0.3.0 all 6 pass. Three of them rely on 0.3.0 behaviour; on this
+release two fail and one passes but gets there later:
+- "waits for the mapper to be ready (3 real stamps), then publishes an audio-time snapshot at once": it relied on
+  the double-counted stamp (`start()` plus the first `sampleIfNotReady()` on the same stamp counted as two
+  readings, so one more poll made three). One stamp is now one sample, so `ready` needs three distinct stamps: the
+  first snapshot comes one poll later, at `2 × READY_POLL_MS` instead of `READY_POLL_MS`. Advance two polls (fails
+  as written).
+- "a listener added after attachAudio gets the current snapshot at once, even when nothing changes": its context
+  gives one constant real stamp (`{ contextTime: 3, performanceTime: 1000 }`), a stuck stamp. 0.3.0 counted it on
+  every sampler tick and was ready in about three ticks. With one-sample-per-stamp alone it would never get ready;
+  now it falls back to `currentTime − outputLatency` after `STAMP_WAIT_MS` (500 ms) on the unchanged stamp, so it
+  is ready at ~500 ms and the offset comes from the fallback rather than the stamp. Passes as written (exactly at
+  its `REPOST_MS × 2` = 500 ms advance, with no margin); give it a stamp that moves, or advance past 500 ms.
+- "re-arms the ready wait when the mapper re-measures (statechange), and publishes when ready again": it dispatches
+  `statechange` while the context stays `running`. 0.3.0 re-measured on every statechange; now the samples are kept
+  when the context clock kept pace, so `audioSnapshot()` stays non-null and there is no second snapshot (fails as
+  written). To test the re-measure, go `suspended` (dispatch), advance wall time more than 10 ms without
+  `currentTime` moving, then back to `running` (dispatch): the mapper re-measures, `ready` is false, and the ready
+  poll publishes again. A `sinkchange` still always re-measures.
+With the first and third changed as described, all 6 pass on this release (checked locally, nothing pushed to
+Bass). Bass can also drop its own `measured` flag (`ready` now stays true across steps, including inside `onStep`) and its
+`onSnapshot` replay (`NcClock.subscribe`).
+
 ## [0.3.0] - Unreleased
 
 Device clock step handling and a correct first reading for `AudioClockMapper`. **Breaking:** `ready` no longer
