@@ -33,6 +33,10 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 - `AudioClockMapper.sample()` keeps one sample per output timestamp. `start()` and the first `sampleIfNotReady()`
   in the same task read the same stamp, and it counted twice, so `ready` came after two real readings instead of
   three. Found by Olive (OLIVE Bass).
+- A real output stamp that stays unchanged while the context runs (stuck) no longer leaves the mapper unready
+  forever with that dedupe: after 500 ms (`STAMP_WAIT_MS`) on one unchanged stamp while not ready, it falls back to
+  `currentTime − outputLatency`, as for placeholder stamps. Once ready, a stuck stamp keeps the anchor. (0.3.0
+  counted the stuck stamp three times and was ready in three ticks.) Found in review (Zeta).
 - `NcSyncPeer` forgets a peer's message sequence number when that peer times out (a tab closed without `bye`) and
   on `stop()`. Before, one entry (about 100 B) per closed tab stayed for the life of the page. Found in ASTRID's
   multi-tab crash soak (NetComposer-Synth fix/crash-soak 7ea28c8).

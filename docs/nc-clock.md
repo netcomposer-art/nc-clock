@@ -78,7 +78,9 @@ output callbacks: `contextTime` stays at ~0.00002–0.00005 s while `performance
 ~20 ms, then ~10 ms late. A note scheduled from one stays that late. `AudioClockMapper` ignores stamps with
 `contextTime` below 3 ms, and `mapper.ready` turns true only after three samples from distinct real stamps
 (single stamps jitter by up to ~2 ms under load). One stamp is one sample however often it is read: `start()` and
-a `sampleIfNotReady()` right after it in the same task read the same stamp, and it counts once. **Wait for `ready` before the first scheduling**: until then
+a `sampleIfNotReady()` right after it in the same task read the same stamp, and it counts once. A real stamp that stays unchanged for 500 ms while the context runs and the mapper isn't ready
+yet is stuck: it falls back to `currentTime − outputLatency`, as for placeholders (once ready, a stuck stamp keeps
+the anchor). **Wait for `ready` before the first scheduling**: until then
 `offset` is only a guess. `ready` is a plain read; to get there quickly, call `mapper.sampleIfNotReady()` from
 a short retry loop (it takes a sample only when the output timestamp is new, and returns `ready`). The
 background timer gets there too, every `intervalMs`. If a browser with the timestamp API gives nothing real for 500 ms, the mapper falls back

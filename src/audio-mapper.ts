@@ -167,6 +167,8 @@ export class AudioClockMapper {
   // The output timestamp of the last real sample kept: the same stamp read again is one reading, not two.
   private lastStampC = -1;
   private lastStampP = -1;
+  // perfNow (ms) when that stamp was first kept (a stamp unchanged for STAMP_WAIT_MS while not ready is stuck).
+  private stampSince = 0;
   private readonly stepThreshold: number;
   private readonly stepConfirmations: number;
   private readonly stepCheckMs: number;
@@ -318,7 +320,8 @@ export class AudioClockMapper {
 
   /**
    * Take one sample. Returns false when the context can't give a trustworthy one yet. A real output timestamp
-   * identical to the last one kept adds nothing (it is the same reading) and returns true.
+   * identical to the last one kept adds nothing (it is the same reading) and returns true; while not ready, one
+   * that stays unchanged for STAMP_WAIT_MS (stuck) falls back to `currentTime − latency`, as placeholders do.
    */
   sample(): boolean {
     const ctx = this.ctx;
@@ -330,9 +333,16 @@ export class AudioClockMapper {
       this.waitSince = null; // a real reading: a later run of non-real stamps waits STAMP_WAIT_MS afresh
       // The same output timestamp again (start() and the first sampleIfNotReady() in one task, or a poll faster
       // than the output callback) is the reading already kept: it must not count twice towards `ready`.
-      if (ts.contextTime === this.lastStampC && ts.performanceTime === this.lastStampP && this.offsets.length) return true;
-      this.lastStampC = ts.contextTime!; this.lastStampP = ts.performanceTime!;
-      offset = ts.contextTime! - (this.timeOrigin + ts.performanceTime!) / 1000;
+      if (ts.contextTime === this.lastStampC && ts.performanceTime === this.lastStampP && this.offsets.length) {
+        // A stamp that stays unchanged while the context runs is stuck: not ready after STAMP_WAIT_MS on it, fall
+        // back to currentTime − latency as for placeholder stamps (0.3.0 counted it three times and got ready).
+        // Once ready, a stuck stamp adds nothing: the anchor it gave is kept.
+        if (this.ready || this.perfNow() - this.stampSince < STAMP_WAIT_MS) return true;
+        if (ctx.currentTime > 0) offset = ctx.currentTime - (this.latency ?? 0) - this.sharedNow();
+      } else {
+        this.lastStampC = ts.contextTime!; this.lastStampP = ts.performanceTime!; this.stampSince = this.perfNow();
+        offset = ts.contextTime! - (this.timeOrigin + ts.performanceTime!) / 1000;
+      }
     } else if (!ts || !(ts.contextTime! >= MIN_STAMP) && !(ts.contextTime! > 0 && !(ts.performanceTime! > 0))) {
       // No timestamp, or none real yet (zeros, or the placeholder Chrome gives for the first output callbacks:
       // contextTime ~0.00002 s while performanceTime runs on, ~20 then ~10 ms off). With a timestamp API, wait up
