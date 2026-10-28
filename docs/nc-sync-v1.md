@@ -57,6 +57,7 @@ newcomer learns who is present.
 Every ~1 s: `app`, `leader` (bool), `audio`, `hidden` (bool), `outputLatencyMs`, `joinedAt`, `capabilities`, and
 `playing` (bool) with `independentStop`. A peer with `independentStop` also sends a heartbeat at once when its
 `playing` changes.
+A follower MAY add `swing` (number) to send a session swing edit to the leader; see [Swing](#swing).
 A peer that knows no other peer MAY stop beating while alone, until one appears (nobody is listening; every peer
 still answers a `hello` with a heartbeat, so a newcomer learns who is there). Such a peer SHOULD send one heartbeat
 when its page is shown again (it may have missed a `hello` while frozen in the background).
@@ -98,7 +99,10 @@ peers with the `swing` capability play it, others ignore it.
   It MUST clamp its own value to 0.5–0.75, or send `0`.
 - Swing is not part of the clock snapshot (section 5): the snapshot says when beats happen; swing is how a
   pattern sits on them. Adding it later would be a minor snapshot version (1.x), which v1 readers accept.
-- A follower's local swing edit stays local until the leader's next `state` (v1 has no swing request message).
+- A peer that does not lead MAY send a swing edit as `heartbeat.swing` (0.5–0.75). The leader SHOULD apply it and
+  send `state` with it. Every peer SHOULD keep the latest such edit until a `state` carries that value (or a
+  `state` sent more than 0.25 s after the edit), and a new leader SHOULD send a kept edit, so an edit made during a
+  handoff is not lost. Older peers ignore the field (a follower's edit then stays local, as before).
 
 Followers MUST ignore `state` with a `term` lower than the highest term they have seen.
 

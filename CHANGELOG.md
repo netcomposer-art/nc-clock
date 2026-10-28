@@ -40,6 +40,14 @@ merge #5 first.
   It is the session stop for everyone again while any known peer lacks the capability (see Compatibility). The e2e
   has a mixed-session step (`?legacy` tab).
 - `stop()` no longer re-elects the leaving tab (its last beat could time out a peer and re-run the election).
+- Swing edits from a tab that does not lead (Petra, on d5d7b86): a follower's Play moves the lead to it, so the
+  stopped ex-leader's later swing edit went nowhere. `publishState()` on a follower now sends its swing to the leader
+  as a session edit (an optional `swing` field on `heartbeat`, no new message type), and the leader applies and
+  broadcasts it. Every peer keeps a pending edit until a `state` carries it (or a `state` sent more than 0.25 s
+  later), so a new leader applies it when the lead moves before the old leader did. Apps that only called
+  `publishState()` while leading must call it on every swing edit. Tempo already went to the leader (`tempo`).
+- Size: the peer was trimmed (shared rank function, listener helpers, no duplicate timer and lock code) so the
+  0.5.0 fixes cost almost nothing over 9083844 (min+gz of the bundle 8,792 B there, 8,813 B now).
 
 ### Compatibility
 - Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.4.0 and earlier.
@@ -195,7 +203,7 @@ Session swing over NC Sync, based on a contributed patch.
 - `NcSyncPeer` option `swing: () => number | null`: the leader writes its swing into `state` (clamped to
   0.5–0.75; `null` sends 0, "unset").
 - `peer.swing` (the session swing, or null until a leader sets one), `peer.onSwing(fn)` (fires on change only, never
-  for unset), and `peer.publishState()` (leader resends `state`; returns false on a follower).
+  for unset), and `peer.publishState()` (leader resends `state`; returns false on a follower; 0.5.0 forwards it).
 - `readSwing()`, `SWING_UNSET`, `SWING_STRAIGHT`, `SWING_MAX` in the protocol module.
 - Spec (docs/nc-sync-v1.md §3): what `state.swing` means (position of the second 16th in each pair, 0.5 straight
   to 0.75), that `0` is unset, that receivers ignore out-of-range values, and that a leader may resend `state`.
