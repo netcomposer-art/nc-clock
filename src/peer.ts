@@ -10,7 +10,7 @@
 import type { ClockAuthority, NcClock, StartRequest, StopRequest, TempoRequest } from './core/clock.js';
 import { nextGridBeat } from './core/transport.js';
 import {
-  readSwing, SWING_MAX, SWING_STRAIGHT, SWING_UNSET,
+  readSwing, SWING_MAX, SWING_STRAIGHT, SWING_UNSET, ANY_SLOT,
   DEFAULT_CAPABILITIES, DEFAULT_CHANNEL, LEADER_LOCK, envelope, parseMessage,
   type AudioReadiness, type Capabilities, type MessageBody, type NcSyncMessage, type SnapshotMessage, type StateMessage,
 } from './protocol.js';
@@ -216,9 +216,21 @@ export class NcSyncPeer implements ClockAuthority {
    */
   publishState(): boolean { if (!this.leader || !this.channel) return false; this.broadcastState(); return true; }
 
-  /** Send a snapshot slot action (`recall` is idempotent; receivers never echo it). */
-  sendSnapshot(op: SnapshotMessage['op'], slot: number, extra: { atBeat?: number; glide?: SnapshotMessage['glide'] } = {}): void {
-    this.send({ type: 'snapshot', op, slot, ...extra });
+  /**
+   * Send a snapshot slot action (`recall` is idempotent; receivers never echo it). Returns the message's `seq`
+   * (0 when the peer is not started), which a later {@link sendCancel} can name as `recallSeq`.
+   */
+  sendSnapshot(op: SnapshotMessage['op'], slot: number, extra: { atBeat?: number; glide?: SnapshotMessage['glide']; recallSeq?: number } = {}): number {
+    return this.send({ type: 'snapshot', op, slot, ...extra });
+  }
+  /**
+   * Withdraw this peer's pending `recall` (e.g. on Load or New), so followers that hold it don't switch on the bar
+   * line. `slot` defaults to {@link ANY_SLOT}; pass `recallSeq` (from {@link sendSnapshot}) so the cancel can never
+   * withdraw a newer recall. Peers older than this op drop it (and still switch). Returns the message's `seq`.
+   */
+  sendCancel(options: { slot?: number; recallSeq?: number } = {}): number {
+    return this.send({ type: 'snapshot', op: 'cancel', slot: options.slot ?? ANY_SLOT,
+      ...(options.recallSeq !== undefined ? { recallSeq: options.recallSeq } : {}) });
   }
 
   /** ClockAuthority: local Play. */
@@ -423,8 +435,9 @@ export class NcSyncPeer implements ClockAuthority {
       outputLatencyMs: this.o.outputLatencyMs(), joinedAt: this.joinedAt, capabilities: this.caps });
   }
   private emitPeers(): void { const list = [...this.peers.values()]; for (const l of [...this.peerListeners]) l(list); }
-  private send<M extends NcSyncMessage>(body: MessageBody<M> | Record<string, unknown>): void {
-    if (!this.channel) return;
+  private send<M extends NcSyncMessage>(body: MessageBody<M> | Record<string, unknown>): number {
+    if (!this.channel) return 0;
     this.channel.postMessage(envelope(body as MessageBody<M>, this.id, this.term, ++this.seq, this.o.now()));
+    return this.seq;
   }
 }
