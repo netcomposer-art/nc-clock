@@ -27,6 +27,11 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
   always re-measures. Before, every statechange re-measured.
 - README "Timing guarantee": transients that revert are covered by the one-beat-per-jump allowance.
 
+### Fixed
+- `AudioClockMapper.sample()` keeps one sample per output timestamp. `start()` and the first `sampleIfNotReady()`
+  in the same task read the same stamp, and it counted twice, so `ready` came after two real readings instead of
+  three. Found by Olive (OLIVE Bass).
+
 ## [0.3.0] - Unreleased
 
 Device clock step handling and a correct first reading for `AudioClockMapper`. **Breaking:** `ready` no longer
