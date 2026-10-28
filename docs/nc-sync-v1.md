@@ -101,7 +101,8 @@ peers with the `swing` capability play it, others ignore it.
   pattern sits on them. Adding it later would be a minor snapshot version (1.x), which v1 readers accept.
 - A peer that does not lead MAY send a swing edit as `heartbeat.swing` (0.5–0.75), but only while it plays in a
   running session; a peer that has not joined, or has stopped, MUST NOT send one (its own swing stays local, so it
-  cannot replace the session swing). The leader SHOULD apply it and
+  cannot replace the session swing). Receivers MUST ignore one while no session runs, or from a peer whose
+  heartbeat has `playing: false`. The leader SHOULD apply it and
   send `state` with it. Every peer SHOULD keep the latest such edit until a `state` carries that value (or a
   `state` sent more than 0.25 s after the edit), and a new leader SHOULD send a kept edit, so an edit made during a
   handoff is not lost. Older peers ignore the field (a follower's edit then stays local, as before).

@@ -10,7 +10,9 @@ Stacked on 0.5.0 (#6).
 ### Changed
 - `publishState()` on a follower forwards a swing edit (`heartbeat.swing`) only while that instrument plays in the
   running session. A follower that has not joined, or has stopped (an ex-leader included), returns `false` and sends
-  nothing, so its own swing cannot replace the session swing. A leader is unchanged. From ASTRID-Rhythm
+  nothing, so its own swing cannot replace the session swing. A leader is unchanged.
+- Receivers (the leader included) ignore a `heartbeat.swing` while no session runs, or from a peer whose heartbeat
+  says `playing: false`, so an older or misbehaving sender cannot replace the session swing either. From ASTRID-Rhythm
   (swing-join:310, psemmelhack/ASTRID-Rhythm#32): an unjoined tab's swing edit replaced the session swing.
 
 ## [0.5.0] - Unreleased
