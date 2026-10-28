@@ -5,6 +5,21 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 
 ## [Unreleased]
 
+### Changed (planned for 0.4.0)
+- `NcSyncPeer` runs its heartbeat timer only while it knows another peer: it starts when one appears (its `hello`
+  or `heartbeat`) and stops when the last one leaves (`bye`) or times out, and on `stop()`. Alone, an idle page no
+  longer wakes every `heartbeatMs`. A newcomer still learns about everyone at once, because every peer answers
+  `hello` with a heartbeat; taking or losing the lead still announces the role with one heartbeat. New read-only
+  getter `beating` (diagnostics and tests). A peer also sends one heartbeat when its page is shown again
+  (`visibilitychange` to visible, `pageshow`), so a lone tab that missed a newcomer's `hello` while frozen still
+  meets it; skipped without `document`/`window` (Node, workers), and the listeners go on `stop()`.
+  docs/nc-sync-v1.md: a peer MAY stop beating while alone (and SHOULD then beat once when shown again). Not a wire
+  change: messages, fields and timeouts are unchanged, and peers on 0.3.0 and earlier interoperate. From ASTRID
+  (NetComposer-Synth), whose idle perf gate allows at most one timer callback a second on an idle page.
+  `stop()` leaves no timer behind when its last heartbeat (sent as it gives up the lead) times out a stale peer
+  while another peer is still known (found by ASTRID's suite, which never exited; regression test in
+  test/heartbeat.test.ts).
+
 ### Added
 - `AudioClockMapper` treats a step that comes back within `stepRevertMs` (new option, default 200 ms of audio clock
   time, `0` = off) as a transient: the confirmed step is still applied at once (~20 ms confirmation unchanged),
