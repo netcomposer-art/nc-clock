@@ -255,14 +255,17 @@ export class NcSyncPeer implements ClockAuthority {
   /** The session swing (0.5 to 0.75) from the latest `state` that set one, or null if no leader has set swing yet. */
   get swing(): number | null { return this.appliedSwing; }
   /**
-   * After a swing edit: the leader sends `state` again now; a follower sends its swing to the leader as a session
-   * edit (in a `heartbeat`), so the edit reaches the session whoever leads. Returns false when not joined (or a
-   * follower without a swing).
+   * After a swing edit: the leader sends `state` again now; a follower that plays in the running session sends its
+   * swing to the leader as a session edit (in a `heartbeat`), so the edit reaches the session whoever leads.
+   * Returns false when not joined, and on a follower that is not playing in a running session (nothing is sent:
+   * its swing stays local) or has no swing.
    */
   publishState(): boolean {
     if (!this.channel) return false;
     if (this.leader) { this.carriedSwing = this.editSwing = null; this.broadcastState(); return true; }
-    const swing = readSwing(this.o.swing());
+    // Only a follower playing in the running session edits the session swing (an unjoined or stopped tab's own
+    // swing must not replace it).
+    const swing = this.clock.playing && this.clock.transport.running ? readSwing(this.o.swing()) : null;
     if (swing === null) return false;
     this.editSwing = swing; this.editAt = this.o.now();
     this.sendHeartbeat(swing);
