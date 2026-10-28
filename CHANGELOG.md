@@ -3,6 +3,16 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
+## [0.5.1] - Unreleased
+
+Stacked on 0.5.0 (#6).
+
+### Changed
+- `publishState()` on a follower forwards a swing edit (`heartbeat.swing`) only while that instrument plays in the
+  running session. A follower that has not joined, or has stopped (an ex-leader included), returns `false` and sends
+  nothing, so its own swing cannot replace the session swing. A leader is unchanged. From ASTRID-Rhythm
+  (swing-join:310, psemmelhack/ASTRID-Rhythm#32): an unjoined tab's swing edit replaced the session swing.
+
 ## [0.5.0] - Unreleased
 
 Independent stop. Released after 0.4.0 (#4, snapshot `cancel`; #5, heartbeat only while another peer is known),
