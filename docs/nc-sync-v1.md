@@ -77,7 +77,7 @@ The whole clock. Followers MUST apply it as is.
 | `leaderApp` | string | Leader's app name. |
 | `stopAll` | boolean, optional | With a stop: also stop free-running arps/sequences (see `transport`). |
 | `independentStop` | boolean, optional | The leader runs per-instrument Stop ([Member play state](#member-play-state-independentstop)). |
-| `endSession` | boolean, optional | With a stop from an `independentStop` leader: every instrument stops (an explicit stop-all, or an old peer's Stop). |
+| `endSession` | boolean, optional | With a stop from an `independentStop` leader: every instrument stops (an explicit stop-all, or a `stop` request). |
 
 The leader MUST send `state` after every decision, in reply to every `hello`, and when it becomes leader. A
 `state` reply to `hello` carries the current anchor and play state, so a late joiner can start mid-bar on the next
@@ -102,7 +102,7 @@ peers with the `swing` capability play it, others ignore it.
 - A peer that does not lead MAY send a swing edit as `heartbeat.swing` (0.5–0.75). The leader SHOULD apply it and
   send `state` with it. Every peer SHOULD keep the latest such edit until a `state` carries that value (or a
   `state` sent more than 0.25 s after the edit), and a new leader SHOULD send a kept edit, so an edit made during a
-  handoff is not lost. Older peers ignore the field (a follower's edit then stays local, as before).
+  handoff is not lost.
 
 Followers MUST ignore `state` with a `term` lower than the highest term they have seen.
 
@@ -117,7 +117,7 @@ Followers MUST ignore `state` with a `term` lower than the highest term they hav
 With `independentStop` (below), a peer sends `start` only when no session runs, and `stop` only with `all: true`;
 its plain Stop and its Play while a session runs are member changes, not requests. An `independentStop` leader
 treats a `start` while running as a Join (it MUST NOT restart the grid), and a `stop` from any peer as a stop of
-the whole session (`endSession: true`), which is what an old peer's Stop means.
+the whole session (`endSession: true`).
 
 #### Member play state (`independentStop`)
 Each instrument stops on its own; the session grid (the clock snapshot) is separate from who plays on it.
@@ -140,12 +140,8 @@ Each instrument stops on its own; the session grid (the clock snapshot) is separ
   while no session runs (or one is ending) starts or keeps the run itself. A leader that stops while others play hands the lead to a playing peer; the new leader sends the
   snapshot unchanged (same anchor, tempo map, meter, start time) with a higher `term`, and keeps the session's
   swing until its app publishes its own. A beat is at the same time before and after the handoff.
-- **Mixed sessions.** While any known peer lacks `independentStop`, a Stop on an `independentStop` peer is the
-  session stop for everyone, as in 0.4.0 (a leader's `state` with `endSession`, or a follower's `transport` stop
-  without `all`), so an old peer never plays on alone; decided per Stop from the peers known at that moment. If any
-  peer that can lead lacks `independentStop`, every peer uses the plain ranking of section 6, so old and new peers
-  agree on one leader, and there is no play-state handoff. An old peer's Stop stops everyone (as before); an old
-  peer's Play on a running session joins it.
+- **No mixed sessions.** Every peer in a session MUST have `independentStop`; there is no fallback for a peer
+  without it.
 
 ### tempo (request)
 `bpm`; optional `atBeat`; optional `rampBeats`.
