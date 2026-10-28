@@ -137,7 +137,7 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 
 | Export | What it does |
 |---|---|
-| `new AudioClockMapper(ctx, { samples?, intervalMs?, userOffsetMs?, stepThresholdMs?, stepConfirmations?, stepCheckMs?, stepConfirmMs? })` | Maps shared time ↔ AudioContext time using `getOutputTimestamp()` and `outputLatency`, a median of recent samples, guards for suspended, zero and placeholder readings, and a re-read when the output device changes. Re-anchors at once on a confirmed device clock step. `start()`, `stop()`, `toContextTime(shared)`, `toSharedTime(ctxTime)`, `offset`, `ready` (a plain read: true after three real samples), `sampleIfNotReady()` (takes a sample while not ready; returns `ready`), `onStep(fn)`, `checkStep()`, `reanchors`, `outputLatencyMs`. See docs/nc-clock.md. |
+| `new AudioClockMapper(ctx, { samples?, intervalMs?, userOffsetMs?, stepThresholdMs?, stepConfirmations?, stepCheckMs?, stepConfirmMs?, stepRevertMs? })` | Maps shared time ↔ AudioContext time using `getOutputTimestamp()` and `outputLatency`, a median of recent samples, guards for suspended, zero and placeholder readings, and a re-read when the output device changes. Re-anchors at once on a confirmed device clock step. `start()`, `stop()`, `toContextTime(shared)`, `toSharedTime(ctxTime)`, `offset`, `ready` (a plain read: true after three real samples), `sampleIfNotReady()` (takes a sample while not ready; returns `ready`), `onStep(fn)` (`revert: true` when a transient is taken back), `checkStep()`, `reanchors` (lasting), `reverts`, `outputLatencyMs`. See docs/nc-clock.md. |
 | `retimeForStep(when, step, renderedUntil)` | Moves a queued context-time event by a confirmed step if it is not yet rendered. |
 | `createTicker(onTick, { intervalMs?, worker? })` | A ~20 ms tick from a Worker timer (not throttled in hidden tabs) plus a main-thread fallback, de-duplicated. `start()`, `stop()`, `dispose()`, `kind`. |
 | `sharedNow()` | Shared time: `(performance.timeOrigin + performance.now()) / 1000`. |
@@ -207,6 +207,11 @@ With `AudioClockMapper` re-mapping the device clock, beat timing error is:
 - **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a real device
   clock jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum
   before it is heard, so no mapper change can move it). The error is one-off and never larger than the jump.
+- **Transients count as jumps.** An output-timestamp excursion that lasts longer than the ~20 ms confirmation is
+  applied at once, like a real step. If it comes back within `stepRevertMs` (200 ms) the mapper restores the
+  anchor it had before, exactly (no lasting re-anchor, and the next beat is back under 1 ms). A beat rendered
+  inside that window follows the excursion, so it is off by at most the excursion, and it is the one beat that
+  window's jump is allowed.
 
 These limits are the CI gate.
 

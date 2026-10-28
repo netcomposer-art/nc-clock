@@ -3,6 +3,20 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
+## [Unreleased]
+
+### Added
+- `AudioClockMapper` treats a step that comes back within `stepRevertMs` (new option, default 200 ms of audio clock
+  time, `0` = off) as a transient: the confirmed step is still applied at once (~20 ms confirmation unchanged),
+  but provisionally; when the readings return to the pre-step anchor inside the window, that anchor is restored
+  exactly, `reanchors` doesn't keep it, the new `reverts` counts it, and `onStep` fires with `revert: true`.
+  From OLIVE Bass hidden-tab run 3 (Olive, ASTRID-Bass docs/sync-results.md).
+
+### Changed
+- The mapper's median no longer allocates (a reused scratch array), so the 50 ms step check and every `offset`
+  read are allocation-free.
+- README "Timing guarantee": transients that revert are covered by the one-beat-per-jump allowance.
+
 ## [0.3.0] - Unreleased
 
 Device clock step handling and a correct first reading for `AudioClockMapper`. **Breaking:** `ready` no longer

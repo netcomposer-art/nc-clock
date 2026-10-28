@@ -91,7 +91,21 @@ reading looks stepped, the confirming readings are taken `stepConfirmMs` (10 ms)
 checks, and each must come from a new output timestamp, so a step is confirmed ~20 ms after it is first seen. On a
 re-anchor
 `offset` jumps by the step and `onStep(listener)` fires with `{ stepSeconds, confirmedAt, reanchors }`.
-One-off `getOutputTimestamp` spikes are ignored. A reading with `contextTime` or `performanceTime` of 0
+One-off `getOutputTimestamp` spikes are ignored.
+
+A confirmed step is provisional for `stepRevertMs` (200 ms of audio clock time). If the readings come back to
+the anchor from before it within that window (within `stepThresholdMs`, confirmed by the same `stepConfirmations`
+readings), it was a transient, not a device clock step: the mapper restores that anchor and all its samples
+exactly, `reanchors` goes back down (`reverts` counts the revert), and `onStep` fires with `revert: true` and the
+`stepSeconds` that move everything back. Handle it like any step (repost, or `retimeForStep`); the steps of one
+window always add up to zero. Further steps inside an open window don't extend it, so a real step that stays is
+final 200 ms after it was confirmed, and a step that comes back after that is a second real step. Why provisional
+rather than waiting to see whether the readings trend back: waiting would push every real step's confirmation
+from ~20 ms to ~200 ms, and a ~10 ms buffer step chased that slowly is what made the 150 ms clock-link window
+lose ~10 ms beats. The cost: a beat rendered while a transient is applied follows it (off by the excursion, at
+most the window long). OLIVE Bass's hidden-tab run 3 (a ~5 ms excursion back in two parts over ~180 ms; 0.3.0
+re-anchored on it and back 150 ms later, leaving its single-stamp anchor ~1 ms off) is replayed in
+`test/clock-blips.test.ts`. `stepRevertMs: 0` makes every confirmed step final, as in 0.3.0. A reading with `contextTime` or `performanceTime` of 0
 (a device glitch) never counts, so it can never confirm a step. Pass `stepThresholdMs: 0` to turn this off.
 
 What happens to notes already scheduled when the step lands:
