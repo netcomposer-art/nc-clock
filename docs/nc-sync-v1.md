@@ -138,7 +138,7 @@ A receiver holding a pending `recall` R MUST drop it, without switching, when it
 - C and R have the same `from` (a cancel never withdraws another peer's recall);
 - C's `seq` is greater than R's (it was sent after R; channels are ordered and `seq` dedupe drops anything older);
 - C's `slot` is `-1` or R's `slot`; and
-- C has no `recallSeq`, or C's `recallSeq` is at least R's `seq`.
+- C has no `recallSeq`, or C's `recallSeq` is at least R's `seq` and below C's own `seq`.
 
 Races and edge cases:
 - **Stale cancel.** A sender that names the recall it means (`recallSeq`) can't withdraw a newer recall: if R was
