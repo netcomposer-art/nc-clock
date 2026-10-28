@@ -127,9 +127,13 @@ Each instrument stops on its own; the session grid (the clock snapshot) is separ
   counts as playing while the session runs; a peer that times out or says `bye` counts as stopped.
 - `state` with `playing: false` and `endSession`, `stopAll`, or no `independentStop` (an old leader) stops every
   instrument. Without those flags it ends an idle session; an instrument that is still playing (a Join crossed the
-  stop) sends `start` and the leader starts a new run.
+  stop) sends `start`, and the leader keeps the run if its stop has not landed yet (else starts a new one). The
+  leader SHOULD also keep a run whose idle stop is still pending as soon as a member's `heartbeat` says it plays, so
+  the Join never depends on that `start` arriving in time.
 - **Handoff.** When every peer that can lead has `independentStop`, the leader ranking puts playing peers first
-  (section 6). A leader that stops while others play hands the lead to a playing peer; the new leader sends the
+  while the session runs (section 6). With no session running, play state does not rank: a Play there is a `start`
+  for the current leader, and moving the lead at that moment could lose it. A new leader whose own instrument plays
+  while no session runs (or one is ending) starts or keeps the run itself. A leader that stops while others play hands the lead to a playing peer; the new leader sends the
   snapshot unchanged (same anchor, tempo map, meter, start time) with a higher `term`, and keeps the session's
   swing until its app publishes its own. A beat is at the same time before and after the handoff.
 - **Mixed sessions.** If any peer that can lead lacks `independentStop`, every peer uses the plain ranking of
@@ -199,8 +203,8 @@ Defaults: `{"tempoRange":[20,300],"tempoRamps":false,"swing":false,"meter":false
 - **With Web Locks** (browsers): peers that can lead request the lock `"nc-sync-leader"`; the holder leads. A holder
   without `prefersLeader` that sees a `prefersLeader` peer yields (releases the lock and withdraws).
 - **Without locks**: the leader is the eligible peer ranked first by `prefersLeader`, then oldest `joinedAt`, then
-  lowest `from`. When every peer that can lead has `independentStop`, a playing peer ranks before a stopped one
-  (then `prefersLeader`, `joinedAt`, `from`); with locks, a stopped holder yields to a playing peer, and a holder
+  lowest `from`. When every peer that can lead has `independentStop` and the session runs, a playing peer ranks
+  before a stopped one (then `prefersLeader`, `joinedAt`, `from`); with locks, a stopped holder yields to a playing peer, and a holder
   without `prefersLeader` yields to a playing one with it. A newcomer SHOULD listen for a short grace period (nc-clock: 300 ms) before claiming the lead, so it
   never competes with a leader that is already running.
 - On becoming leader a peer increments `term` past any it has seen and broadcasts `state`. The anchor carries over,

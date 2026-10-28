@@ -22,9 +22,21 @@ merge #5 first.
 - NC Sync v1 (still `nc-sync/1`): the `independentStop` capability; `playing` in `hello` and `heartbeat`;
   `state.independentStop` and `state.endSession`; a playing-first leader ranking when every peer that can lead has
   the capability. See docs/nc-sync-v1.md, "Member play state".
-- `test/e2e/three-tab.mjs` and `examples/three-tab/`: a three-tab e2e (start A, B, C; stop B; stop the leader;
-  restart B; stop the rest) against the sync standard, driven through a small `window.ncE2E` hook instruments can
-  implement to run it in their own suites. `npm run e2e` (needs `playwright-core`; set `PLAYWRIGHT_CORE`).
+- `test/e2e/three-tab.mjs` and `examples/three-tab/`: a three-tab e2e (Play first in a tab that does not lead; start
+  the rest; stop B; stop the leader; restart B; stop the rest; Play in a non-leading tab again after the end) against
+  the sync standard, driven through a small `window.ncE2E` hook instruments can implement to run it in their own
+  suites. Timing comes from real Web Audio notes when the tab plays them (`?audio`: the harness reads each
+  `OscillatorNode.start` and maps it with the page's own output timestamps), else from the scheduled times.
+  `npm run e2e` (needs `playwright-core`; set `PLAYWRIGHT_CORE`); `SKEW_MS=4` is the negative control. Runs in CI.
+
+### Fixed (review of #6 @338b291)
+- With Web Locks, Play in a tab that did not lead, with no session running, left it playing on a stopped session
+  forever: its own heartbeat moved the lead (playing outranked stopped) while its start request went to the old
+  leader, which released the lock and dropped it. Playing now ranks only while the session runs, and a new leader
+  whose instrument plays on a stopped or ending session starts (or keeps) the run.
+- A tab that joined just as the last instrument stopped no longer depends on its start request: the leader keeps the
+  run on its playing heartbeat (no old-grid notes, then a restart, when the request is late or lost).
+- `stop()` no longer re-elects the leaving tab (its last beat could time out a peer and re-run the election).
 
 ### Compatibility
 - Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.4.0 and earlier.
