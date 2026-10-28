@@ -9,6 +9,9 @@ Device clock step handling and a correct first reading for `AudioClockMapper`. *
 takes a sample (see Changed and the migration note).
 
 ### Changed
+- Documented the timing guarantee (README, "Timing guarantee"): after re-mapping, beat error p95 ≤ 1 ms and
+  max ≤ 3 ms, with at most 1 beat over 3 ms per 10 minutes per tab (the one beat a real device clock jump can slip
+  when it hits audio already in the device buffer).
 - **Breaking:** `AudioClockMapper.ready` is now a pure getter: reading it never takes a sample. The sampling it
   did moved to a new method, `sampleIfNotReady(): boolean`, which takes one sample while not ready (only when the
   output timestamp is new) and returns `ready`.

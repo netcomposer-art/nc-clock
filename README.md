@@ -198,6 +198,17 @@ drop repeats of (`from`, `seq`), never re-broadcast.
 
 ---
 
+## Timing guarantee
+
+With `AudioClockMapper` re-mapping the device clock, beat timing error is:
+
+- **p95 ≤ 1 ms** and **max ≤ 3 ms** after re-mapping.
+- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a real device
+  clock jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum
+  before it is heard, so no mapper change can move it). The error is one-off and never larger than the jump.
+
+These limits are the CI gate.
+
 ## Browser support and limits
 
 | | |
