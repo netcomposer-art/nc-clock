@@ -124,6 +124,7 @@ export class NcSyncPeer implements ClockAuthority {
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private grace: ReturnType<typeof setTimeout> | null = null;
   private releaseLock: (() => void) | null = null;
+  private stopWakeListeners: (() => void) | null = null;
   private lockAbort: AbortController | null = null;
   private yielding = false;
   private stopAll = false;
@@ -171,6 +172,7 @@ export class NcSyncPeer implements ClockAuthority {
     this.send({ type: 'hello', app: this.o.app, version: this.o.version, capabilities: this.caps, audio: this.o.audio(), outputLatencyMs: this.o.outputLatencyMs(), joinedAt: this.joinedAt });
     // Heartbeats only while another peer is here (syncHeartbeat): alone, nobody listens, and an idle page must
     // not wake every second. A newcomer still learns about us: everyone answers its `hello` with a heartbeat.
+    this.listenForWake();
     if (this.locks) this.elect();
     else this.grace = setTimeout(() => { this.grace = null; this.elect(); }, this.o.joinGraceMs);
   }
@@ -182,6 +184,7 @@ export class NcSyncPeer implements ClockAuthority {
     this.heartbeat = null;
     if (this.grace) clearTimeout(this.grace);
     this.grace = null;
+    this.stopWakeListeners?.(); this.stopWakeListeners = null;
     this.yielding = true;
     this.lockAbort?.abort(); this.lockAbort = null;
     this.releaseLock?.(); this.releaseLock = null;
@@ -432,6 +435,28 @@ export class NcSyncPeer implements ClockAuthority {
   }
   /** True while the heartbeat timer runs (diagnostics and tests). */
   get beating(): boolean { return this.heartbeat !== null; }
+  /**
+   * Send one heartbeat when the page is shown again (visibilitychange to visible, or pageshow, e.g. back from
+   * the back/forward cache). A lone peer has no heartbeat timer, so if it missed a newcomer's `hello` (frozen or
+   * throttled in the background) and the newcomer is alone too (under Web Locks it waits for the lock and never
+   * leads), neither would ever hear the other. One heartbeat on wake lets the newcomer find it, and the two then
+   * beat as usual. Skipped where there is no `document` / `window` (Node, workers). Removed on {@link stop}.
+   */
+  private listenForWake(): void {
+    type Target = { addEventListener?(type: string, l: () => void): void; removeEventListener?(type: string, l: () => void): void };
+    const g = globalThis as { document?: Target & { visibilityState?: string }; window?: Target };
+    const doc = typeof g.document?.addEventListener === 'function' ? g.document : null;
+    const win = typeof g.window?.addEventListener === 'function' ? g.window : null;
+    if (!doc && !win) return;
+    const onVisible = () => { if (doc?.visibilityState !== 'hidden') this.sendHeartbeat(); };
+    const onShow = () => this.sendHeartbeat();
+    doc?.addEventListener!('visibilitychange', onVisible);
+    win?.addEventListener!('pageshow', onShow);
+    this.stopWakeListeners = () => {
+      doc?.removeEventListener?.('visibilitychange', onVisible);
+      win?.removeEventListener?.('pageshow', onShow);
+    };
+  }
   private send<M extends NcSyncMessage>(body: MessageBody<M> | Record<string, unknown>): void {
     if (!this.channel) return;
     this.channel.postMessage(envelope(body as MessageBody<M>, this.id, this.term, ++this.seq, this.o.now()));
