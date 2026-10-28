@@ -3,6 +3,34 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
+## [0.4.0] - Unreleased
+
+Independent stop. This release also carries the [Unreleased] changes below (they have not shipped yet).
+
+### Added
+- Per-instrument Stop, opt-in: `new NcSyncPeer({ …, independentStop: true })`. Stop in one tab stops only that
+  instrument; the session grid runs on for the others with no beat jump, and the session ends only when the last
+  instrument stops. Play while others play is a Join on the running grid (tempo map, meter and swing included) and
+  never restarts it. If the leader stops while others play, the lead hands off to a playing tab: the snapshot is
+  sent unchanged (same anchor, tempo map, start time) with the term incremented, and the session swing is carried
+  until the new leader's app publishes its own. `clock.stop({ at, all: true })` stays the explicit stop-all
+  (`state.stopAll` and `state.endSession`). From the netcomposer.art P1 (Stop in any tab stopped every tab).
+- `NcClock`: `playing` (this instrument), `isPlayingAt(t)`, `joinPoint(t, gridBeats?)`, `commitMember(playing, at)`,
+  and the `{ kind: 'member', playing, at }` change. `ClockAuthority.independentStop` (optional).
+- NC Sync v1 (still `nc-sync/1`): the `independentStop` capability; `playing` in `hello` and `heartbeat`;
+  `state.independentStop` and `state.endSession`; a playing-first leader ranking when every peer that can lead has
+  the capability. See docs/nc-sync-v1.md, "Member play state".
+- `test/e2e/three-tab.mjs` and `examples/three-tab/`: a three-tab e2e (start A, B, C; stop B; stop the leader;
+  restart B; stop the rest) against the sync standard, driven through a small `window.ncE2E` hook instruments can
+  implement to run it in their own suites. `npm run e2e` (needs `playwright-core`; set `PLAYWRIGHT_CORE`).
+
+### Compatibility
+- Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.3.0.
+- Mixed sessions: next to a peer without the capability, an `independentStop` peer counts it as playing while the
+  session runs, an old peer's Stop ends the session for everyone, an old peer's Play on a running session joins it
+  (an `independentStop` leader never restarts a running grid), and every peer uses the 0.3.0 leader ranking, so
+  old and new peers agree on one leader (no play-state handoff in a mixed session).
+
 ## [Unreleased]
 
 ### Added
