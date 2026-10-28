@@ -41,6 +41,12 @@ takes a sample (see Changed and the migration note).
   Petra (ASTRID Rhythm). Not a wire change.
 
 ### Fixed
+- `examples/metronome`: queued clicks no longer drift off the grid when the audio clock runs fast or slow against
+  wall time. A click kept the mapping of the moment it was queued, so with a long look-ahead (70 s, as a hidden tab
+  test harness used) and ~83 ppm drift it ended up ~5 ms off. New `examples/metronome/retime-drift.js`:
+  `retimeDrift()` runs on every ticker tick and moves any queued click more than 0.2 ms off the current mapping
+  (cancel and re-create). New test `test/drift.test.ts` (83 ppm, 70 s look-ahead: max 6.18 ms without it, 0.58 ms
+  with it). The library (`src/`) is unchanged. From ASTRID Rhythm (Petra).
 - A follower's first note on join was sometimes 10–20 ms late. Right after a context starts, Chrome's
   `getOutputTimestamp()` gives placeholders (`contextTime` ~0.00002 s while `performanceTime` runs on, reading ~20
   then ~10 ms late), and a fresh `AudioClockMapper` took the first one as its offset. Stamps with `contextTime`

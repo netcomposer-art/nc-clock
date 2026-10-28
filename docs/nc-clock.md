@@ -59,6 +59,9 @@ sequencer), in Node, or ported to another language.
 3. **Join**: create the clock on shared time, an `AudioClockMapper` for your AudioContext, and an `NcSyncPeer`
    with your app name and capabilities (tempo range, whether you have swing, whether you'd like to lead).
 4. **Convert at the last moment**: `mapper.toContextTime(clock.transport.timeAt(beat))` is when to start the sound.
+   If you queue events further ahead than that, re-map them as you go: the audio clock drifts against the shared
+   clock (often tens of ppm), so an event keeps the mapping of the moment it was queued and drifts off the grid
+   (83 ppm × 60 s ≈ 5 ms). `examples/metronome/retime-drift.js` does this on every tick.
 5. **Listen**: `clock.onChange(...)`. A start, stop, tempo change or new card can arrive at any time; recompute your
    next beat from the clock (never from your own counters).
 6. Done. Your Play, Stop and tempo controls now go through the leader automatically.
