@@ -125,7 +125,7 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 |---|---|
 | `new TempoMap({ bpm, anchor?, minBpm?, maxBpm?, maxPoints? })` | Piecewise-constant tempo from an anchor. `timeAt(beat)`, `beatAt(time)`, `bpmAt(beat)`, `setTempoAt(bpm, beat)`, `rampTempo(toBpm, startBeat, beats, stepBeats?)` (a ramp as small steps), `restart(anchor, bpm)`, `shift(seconds)`, `clone()`. |
 | `new Transport({ bpm?, meter?, minBpm?, maxBpm? })` | A tempo map plus start/stop. `start({ at, beat?, bpm? })`, `stop({ at })`, `running`, `isPlayingAt(t)`, `beatAt(t)` (frozen while stopped), `timeAt(beat)`, `setTempo(bpm, atBeat?)`, `position(beat)` → `{ bar, beatInBar, barPhase }`, `nextBar(beat)`, `meter`. |
-| `new NcClock({ bpm?, meter?, timebase? })` | A transport with an **authority seam**. `play(req)`, `stop(req)`, `setTempo(req)`: standalone they apply at once (and return `true`); with an authority set they become requests (and return `false`). `commitStart/commitStop/commitTempo`, `applySnapshot(s)`, `toSnapshot()`, `onChange(fn)`, `setAuthority(a)`, `external`. |
+| `new NcClock({ bpm?, meter?, timebase? })` | A transport with an **authority seam**. `play(req)`, `stop(req)`, `setTempo(req)`: standalone they apply at once (and return `true`); with an authority set they become requests (and return `false`). `commitStart/commitStop/commitTempo`, `applySnapshot(s)`, `toSnapshot()`, `onChange(fn)` (changes from now on), `subscribe(fn)` (the current state at once as `{ kind: 'snapshot', replay: true }`, then every change), `setAuthority(a)`, `external`. |
 | `ClockAuthority` | `{ requestStart, requestStop, requestTempo }`: implement it to plug in any sync source (NC Sync, MIDI clock, Ableton Link bridge, a server). |
 | `toSnapshot(transport, timebase)` / `fromSnapshot(snap)` / `applySnapshot(transport, snap)` | JSON-safe state, `version: 1`. A round trip gives identical `beatAt`/`timeAt` results. |
 | `shiftSnapshot(snap, offsetSeconds, timebase)` | Move a snapshot to another timeline (e.g. shared time → AudioContext time). |
@@ -137,7 +137,7 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 
 | Export | What it does |
 |---|---|
-| `new AudioClockMapper(ctx, { samples?, intervalMs?, userOffsetMs?, stepThresholdMs?, stepConfirmations?, stepCheckMs?, stepConfirmMs? })` | Maps shared time ↔ AudioContext time using `getOutputTimestamp()` and `outputLatency`, a median of recent samples, guards for suspended, zero and placeholder readings, and a re-read when the output device changes. Re-anchors at once on a confirmed device clock step. `start()`, `stop()`, `toContextTime(shared)`, `toSharedTime(ctxTime)`, `offset`, `ready` (a plain read: true after three real samples), `sampleIfNotReady()` (takes a sample while not ready; returns `ready`), `onStep(fn)`, `checkStep()`, `reanchors`, `outputLatencyMs`. See docs/nc-clock.md. |
+| `new AudioClockMapper(ctx, { samples?, intervalMs?, userOffsetMs?, stepThresholdMs?, stepConfirmations?, stepCheckMs?, stepConfirmMs?, stepRevertMs? })` | Maps shared time ↔ AudioContext time using `getOutputTimestamp()` and `outputLatency`, a median of recent samples, guards for suspended, zero and placeholder readings, and a re-read when the output device changes. Re-anchors at once on a confirmed device clock step. `start()`, `stop()`, `toContextTime(shared)`, `toSharedTime(ctxTime)`, `offset`, `ready` (a plain read: true after three real samples; stays true across steps, resets on a real suspend/resume or a device change), `sampleIfNotReady()` (takes a sample while not ready; returns `ready`), `onStep(fn)` (`revert: true` when a transient is taken back), `checkStep()`, `reanchors` (lasting), `reverts`, `outputLatencyMs`. See docs/nc-clock.md. |
 | `retimeForStep(when, step, renderedUntil)` | Moves a queued context-time event by a confirmed step if it is not yet rendered. |
 | `createTicker(onTick, { intervalMs?, worker? })` | A ~20 ms tick from a Worker timer (not throttled in hidden tabs) plus a main-thread fallback, de-duplicated. `start()`, `stop()`, `dispose()`, `kind`. |
 | `sharedNow()` | Shared time: `(performance.timeOrigin + performance.now()) / 1000`. |
@@ -203,12 +203,24 @@ drop repeats of (`from`, `seq`), never re-broadcast.
 
 With `AudioClockMapper` re-mapping the device clock, beat timing error is:
 
-- **p95 ≤ 1 ms** and **max ≤ 3 ms** after re-mapping.
-- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a real device
-  clock jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum
-  before it is heard, so no mapper change can move it). The error is one-off and never larger than the jump.
+- **Re-mapped p95 ≤ 1 ms.**
+- **Max ≤ 3 ms.**
+- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a real device clock
+  jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum before
+  it is heard, so no mapper change can move it).
 
-These limits are the CI gate.
+These numbers are unchanged. p95 ≤ 1 ms and max ≤ 3 ms are enforced for clock drift in test/drift.test.ts, which
+runs in CI. The at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked
+automatically: neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI.
+ASTRID-Rhythm's sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and
+non-blocking.
+
+A reverted excursion (a blip: a confirmed step whose readings come back within `stepRevertMs`) is not a real device
+clock event and does not claim the one-beat allowance. Beats off during a blip count against the normal limit of at
+most 1 beat over 3 ms per 10 minutes per tab. Beats during a blip can still be more than 3 ms off: in a 50-seed
+replay of OLIVE Bass's hidden-tab run 3 (the profile in test/clock-blips.test.ts), the worst beat was 5.3 ms off
+with and without the provisional step, and 10–13% of beat phases in the 500 ms around the excursion were over 3 ms.
+Rejecting blips early is deferred until real sessions show it matters.
 
 ## Browser support and limits
 

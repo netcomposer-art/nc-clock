@@ -63,7 +63,10 @@ sequencer), in Node, or ported to another language.
    clock (often tens of ppm), so an event keeps the mapping of the moment it was queued and drifts off the grid
    (83 ppm × 60 s ≈ 5 ms). `examples/metronome/retime-drift.js` does this on every tick.
 5. **Listen**: `clock.onChange(...)`. A start, stop, tempo change or new card can arrive at any time; recompute your
-   next beat from the clock (never from your own counters).
+   next beat from the clock (never from your own counters). A scheduler or worklet created later (after Tap to join
+   unlocks audio) uses `clock.subscribe(...)` instead: it gets the current state at once (`kind: 'snapshot'`,
+   `replay: true`), since a steady clock sends no change it could wait for. Map it with `mapper.offset` once
+   `mapper.ready`, and repost on `mapper.onStep`.
 6. Done. Your Play, Stop and tempo controls now go through the leader automatically.
 
 The metronome in `examples/metronome` does exactly this in about 100 lines.
@@ -74,11 +77,20 @@ Right after an AudioContext starts, Chrome's `getOutputTimestamp()` gives placeh
 output callbacks: `contextTime` stays at ~0.00002–0.00005 s while `performanceTime` already runs, so they read
 ~20 ms, then ~10 ms late. A note scheduled from one stays that late. `AudioClockMapper` ignores stamps with
 `contextTime` below 3 ms, and `mapper.ready` turns true only after three samples from distinct real stamps
-(single stamps jitter by up to ~2 ms under load). **Wait for `ready` before the first scheduling**: until then
+(single stamps jitter by up to ~2 ms under load). One stamp is one sample however often it is read: `start()` and
+a `sampleIfNotReady()` right after it in the same task read the same stamp, and it counts once. A real stamp that stays unchanged for 500 ms while the context runs and the mapper isn't ready
+yet is stuck: it falls back to `currentTime − outputLatency`, as for placeholders (once ready, a stuck stamp keeps
+the anchor). **Wait for `ready` before the first scheduling**: until then
 `offset` is only a guess. `ready` is a plain read; to get there quickly, call `mapper.sampleIfNotReady()` from
 a short retry loop (it takes a sample only when the output timestamp is new, and returns `ready`). The
 background timer gets there too, every `intervalMs`. If a browser with the timestamp API gives nothing real for 500 ms, the mapper falls back
 to `currentTime − outputLatency`, as it does where the API is missing.
+
+Once true, `ready` stays true across a confirmed device clock step or a revert (the samples move with the step,
+so it reads true inside `onStep` too), and across a statechange where the context clock kept pace with wall time
+(within 10 ms). It goes false, and takes three new real samples, only when the anchor is invalid: after an output
+device change (`sinkchange`), or on resume after the context clock stood still (a real suspend freezes
+`currentTime` while wall time runs on). While the context isn't running the samples are kept and nothing samples.
 
 ## Device clock steps
 
@@ -91,8 +103,32 @@ reading looks stepped, the confirming readings are taken `stepConfirmMs` (10 ms)
 checks, and each must come from a new output timestamp, so a step is confirmed ~20 ms after it is first seen. On a
 re-anchor
 `offset` jumps by the step and `onStep(listener)` fires with `{ stepSeconds, confirmedAt, reanchors }`.
-One-off `getOutputTimestamp` spikes are ignored. A reading with `contextTime` or `performanceTime` of 0
-(a device glitch) never counts, so it can never confirm a step. Pass `stepThresholdMs: 0` to turn this off.
+One-off `getOutputTimestamp` spikes are ignored.
+
+A confirmed step is provisional for `stepRevertMs` (200 ms of audio clock time). If the readings come back to the
+anchor from before it within that window (within `stepThresholdMs`, confirmed by the same `stepConfirmations`
+readings), it was a transient, not a device clock step: the mapper restores that anchor and all its samples exactly,
+`reanchors` goes back down (`reverts` counts the revert), and `onStep` fires with `revert: true` and the
+`stepSeconds` that move everything back. Handle it like any step (repost, or `retimeForStep`); the offset returns
+exactly to the pre-step anchor. Further steps inside an open window don't extend it, so a real step that stays is
+final 200 ms after it was confirmed, and a step that comes back after that is a second real step. Why provisional
+rather than waiting to see whether the readings trend back: waiting would push every real step's confirmation from
+~20 ms to ~200 ms, and a ~10 ms buffer step chased that slowly is what made the 150 ms clock-link window lose ~10 ms
+beats. Timing guarantee (unchanged, README "Timing guarantee"): re-mapped p95 ≤ 1 ms, max ≤ 3 ms, and at most 1 beat
+over 3 ms per 10 minutes per tab. p95 ≤ 1 ms and max ≤ 3 ms are enforced for clock drift in test/drift.test.ts, which runs in CI. The
+at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked automatically:
+neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI. ASTRID-Rhythm's
+sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and non-blocking. A reverted
+excursion (a blip: a confirmed step whose readings come back within `stepRevertMs`) is not a real device clock event
+and does not claim the one-beat allowance. Beats off during a blip count against the normal limit of at most 1 beat
+over 3 ms per 10 minutes per tab. Beats during a blip can still be more than 3 ms off: in a 50-seed replay of OLIVE
+Bass's hidden-tab run 3 (the profile in test/clock-blips.test.ts), the worst beat was 5.3 ms off with and without
+the provisional step, and 10–13% of beat phases in the 500 ms around the excursion were over 3 ms. Rejecting blips
+early is deferred until real sessions show it matters. OLIVE Bass's hidden-tab run 3 (a ~5 ms excursion back in two
+parts over ~180 ms; 0.3.0 re-anchored on it and back 150 ms later, leaving its single-stamp anchor ~1 ms off) is
+replayed in `test/clock-blips.test.ts`. `stepRevertMs: 0` makes every confirmed step final, as in 0.3.0. A reading
+with `contextTime` or `performanceTime` of 0 (a device glitch) never counts, so it can never confirm a step. Pass
+`stepThresholdMs: 0` to turn this off.
 
 What happens to notes already scheduled when the step lands:
 

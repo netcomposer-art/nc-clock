@@ -50,6 +50,14 @@ export interface AudioClockMapperOptions {
    * (`contextTime` must change). `0` keeps confirmations on the periodic checks.
    */
   stepConfirmMs?: number;
+  /**
+   * Revert window (ms of audio clock time). A confirmed step is applied at once, but provisionally: if the readings
+   * come back to the anchor from before it (within `stepThresholdMs`, confirmed like a step) within this window, it
+   * was a transient, not a device clock step. The mapper then restores that anchor exactly (all its samples), counts
+   * no lasting re-anchor, and `onStep` fires with `revert: true`. Default 200. `0` turns it off (every confirmed
+   * step is final, as in 0.3.0).
+   */
+  stepRevertMs?: number;
 }
 
 /** A confirmed device clock step, as handed to {@link AudioClockMapper.onStep} listeners. */
@@ -58,8 +66,14 @@ export interface ClockStep {
   stepSeconds: number;
   /** `ctx.currentTime` when the step was confirmed. Anything rendered before this is already heard. */
   confirmedAt: number;
-  /** Steps re-anchored since construction, including this one. */
+  /** Lasting re-anchors since construction, after this event (a revert takes back the steps it undoes). */
   reanchors: number;
+  /**
+   * True when this event takes back a provisional step (a transient that returned within `stepRevertMs`): the
+   * mapping is back on the anchor it had before that step, and `stepSeconds` moves events back to it. Always set
+   * by the mapper; optional in the type so hand-made events (tests) still type-check.
+   */
+  revert?: boolean;
 }
 
 /**
@@ -94,6 +108,12 @@ const MIN_STAMP = 0.003;
  * by up to ~2 ms (headless Chrome under load); the median of three drops one such reading.
  */
 const READY_SAMPLES = 3;
+/**
+ * Resume (s): a context clock that kept pace with wall time within this across a statechange keeps its anchor.
+ * Larger than `currentTime`'s render-quantum steps (2.7 ms at 48 kHz, 5.8 ms at 22.05 kHz); anything smaller that
+ * is real is a clock step, which step detection confirms. With step detection off, any mismatch re-measures.
+ */
+const RESUME_TOLERANCE = 0.01;
 /** How long (ms) to wait for a real output timestamp before falling back to `currentTime − latency`. */
 const STAMP_WAIT_MS = 500;
 
@@ -119,21 +139,58 @@ export class AudioClockMapper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLatencyRead = -Infinity;
   private latency: number | null = null;
-  private readonly onSink = () => { this.offsets = []; this.clearPending(); this.waitSince = null; this.readLatency(true); this.sample(); };
+  /** Re-measure from scratch: the anchor is invalid (a new output device, or a context clock that stood still). */
+  private readonly onSink = () => { this.offsets.length = 0; this.revertUntil = -Infinity; this.clearPending(); this.waitSince = null; this.readLatency(true); this.sample(); };
+  // Context time and perfNow (ms) when the context stopped running (null: running, or never seen stopping).
+  private pausedCtx: number | null = null;
+  private pausedWall = 0;
+  /**
+   * Suspend/resume (statechange): the samples are kept while the context isn't running (nothing samples then).
+   * On resume, if the context clock kept pace with wall time (within RESUME_TOLERANCE) the anchor is still valid
+   * and `ready` stays true; if it stood still (a real suspend: currentTime freezes) the anchor is invalid, so the
+   * mapper re-measures and `ready` is false until three new real samples.
+   */
+  private readonly onState = () => {
+    const ctx = this.ctx;
+    if (ctx.state !== 'running') {
+      this.clearPending();
+      if (this.pausedCtx === null) { this.pausedCtx = ctx.currentTime; this.pausedWall = this.perfNow(); }
+      return;
+    }
+    if (this.pausedCtx === null) return;
+    const lag = (ctx.currentTime - this.pausedCtx) - (this.perfNow() - this.pausedWall) / 1000;
+    this.pausedCtx = null;
+    if (!(Math.abs(lag) <= (this.stepThreshold > 0 ? RESUME_TOLERANCE : 0))) this.onSink();
+  };
   // When the timestamp had nothing real yet (zeros, or a placeholder below MIN_STAMP), since when (perfNow ms).
   private waitSince: number | null = null;
-  private readyStamp: number | undefined = undefined;
+  // The output timestamp of the last real sample kept: the same stamp read again is one reading, not two.
+  private lastStampC = -1;
+  private lastStampP = -1;
+  // perfNow (ms) when that stamp was first kept (a stamp unchanged for STAMP_WAIT_MS while not ready is stuck).
+  private stampSince = 0;
   private readonly stepThreshold: number;
   private readonly stepConfirmations: number;
   private readonly stepCheckMs: number;
   private stepTimer: ReturnType<typeof setInterval> | null = null;
   private pendingStep: number | null = null;
   private pendingCount = 0;
+  private pendingBack = false;
   private readonly stepConfirmMs: number;
   private confirmTimer: ReturnType<typeof setTimeout> | null = null;
   // contextTime of the last reading counted towards the pending step (the same stamp twice is one reading).
   private pendingStamp = 0;
   private stepCount = 0;
+  private revertCount = 0;
+  private readonly stepRevert: number;
+  // The anchor before the first step of the open revert window: its samples, median and re-anchor count.
+  private readonly preStep: number[] = [];
+  private preStepBase = 0;
+  private preStepCount = 0;
+  // ctx.currentTime until which a reading back at the pre-step anchor reverts (-Infinity: no window open).
+  private revertUntil = -Infinity;
+  // Scratch for the median (no allocation on the step check or `offset` read).
+  private readonly scratch: number[] = [];
   private readonly stepListeners = new Set<(step: ClockStep) => void>();
   /** Manual offset in ms (the ±250 ms per-tab slider). */
   userOffsetMs: number;
@@ -151,10 +208,13 @@ export class AudioClockMapper {
     this.stepConfirmations = Math.max(1, options.stepConfirmations ?? 3);
     this.stepCheckMs = options.stepCheckMs ?? 50;
     this.stepConfirmMs = Math.max(0, options.stepConfirmMs ?? 10);
+    this.stepRevert = Math.max(0, options.stepRevertMs ?? 200) / 1000;
   }
 
-  /** Device clock steps re-anchored so far. */
+  /** Lasting device clock re-anchors so far (a reverted transient is not counted). */
   get reanchors(): number { return this.stepCount; }
+  /** Provisional steps taken back so far because the readings returned within `stepRevertMs` (transients). */
+  get reverts(): number { return this.revertCount; }
 
   /** Hear confirmed device clock steps (repost your snapshot, re-time queued events). Returns an unsubscribe. */
   onStep(listener: (step: ClockStep) => void): () => void { this.stepListeners.add(listener); return () => { this.stepListeners.delete(listener); }; }
@@ -173,23 +233,74 @@ export class AudioClockMapper {
     // Placeholders (contextTime below MIN_STAMP) and glitch readings (performanceTime 0) never count.
     if (!(c >= MIN_STAMP && p > 0) || !Number.isFinite(c) || !Number.isFinite(p)) return false;
     const raw = c - (this.timeOrigin + p) / 1000;
-    const step = raw - median(this.offsets);
-    if (Math.abs(step) <= this.stepThreshold) { this.clearPending(); return false; }
-    if (this.pendingStep !== null && Math.abs(step - this.pendingStep) < this.stepThreshold / 2) {
+    const base = this.median();
+    const step = raw - base;
+    // Inside a revert window: a reading back at the pre-step anchor (and nearer it than the current one) heads for
+    // a revert. It needs the same confirmation as a step, but not a full threshold from the current median: the
+    // periodic samples taken in the window pull that median part of the way back.
+    const dPre = Math.abs(raw - this.preStepBase);
+    const back = this.ctx.currentTime <= this.revertUntil && dPre <= this.stepThreshold && dPre < Math.abs(step);
+    if (!back && Math.abs(step) <= this.stepThreshold) { this.clearPending(); return false; }
+    if (this.pendingStep !== null && back === this.pendingBack && (back || Math.abs(step - this.pendingStep) < this.stepThreshold / 2)) {
       // The same output timestamp read again is not a second reading: look again shortly.
       if (c === this.pendingStamp) { this.followUp(); return false; }
       this.pendingStamp = c;
       if (++this.pendingCount < this.stepConfirmations) { this.followUp(); return false; }
-      this.offsets = [raw];
-      this.clearPending(); this.stepCount++;
-      const event: ClockStep = { stepSeconds: step, confirmedAt: this.ctx.currentTime, reanchors: this.stepCount };
-      for (const l of [...this.stepListeners]) l(event);
-      return true;
+      this.clearPending();
+      return this.reanchor(raw, base, back);
     }
-    this.pendingStep = step; this.pendingCount = 1; this.pendingStamp = c;
+    this.pendingStep = step; this.pendingBack = back; this.pendingCount = 1; this.pendingStamp = c;
     if (this.stepConfirmations === 1) return this.checkStep();
     this.followUp();
     return false;
+  }
+
+  /**
+   * Apply a confirmed step. Inside an open revert window, readings back at the pre-step anchor take the window's
+   * steps back (restore that anchor's samples exactly); any other confirmed step re-anchors on `raw`. The first
+   * step outside a window opens one (saving the anchor), later steps inside it don't extend it.
+   */
+  private reanchor(raw: number, base: number, back: boolean): boolean {
+    const now = this.ctx.currentTime;
+    const open = now <= this.revertUntil;
+    let event: ClockStep;
+    if (back && open) {
+      const o = this.offsets, saved = this.preStep;
+      o.length = 0;
+      for (let i = 0; i < saved.length; i++) o.push(saved[i]);
+      this.stepCount = this.preStepCount; this.revertCount++; this.revertUntil = -Infinity;
+      event = { stepSeconds: this.preStepBase - base, confirmedAt: now, reanchors: this.stepCount, revert: true };
+    } else {
+      if (Math.abs(raw - base) <= this.stepThreshold) return false; // a revert whose window just closed: nothing to do
+      if (!open) {
+        const o = this.offsets, saved = this.preStep;
+        saved.length = 0;
+        for (let i = 0; i < o.length; i++) saved.push(o[i]);
+        this.preStepBase = base; this.preStepCount = this.stepCount;
+        this.revertUntil = this.stepRevert > 0 ? now + this.stepRevert : -Infinity;
+      }
+      // Move every sample by the step (the median lands on `raw` exactly), so `ready` stays true across it.
+      const o = this.offsets, d = raw - base;
+      for (let i = 0; i < o.length; i++) o[i] += d;
+      this.stepCount++;
+      event = { stepSeconds: raw - base, confirmedAt: now, reanchors: this.stepCount, revert: false };
+    }
+    for (const l of [...this.stepListeners]) l(event);
+    return true;
+  }
+
+  /** Median of the kept samples, sorted in a reused scratch array (insertion sort; at most `samples` long). */
+  private median(): number {
+    const o = this.offsets, s = this.scratch, n = o.length;
+    s.length = n;
+    for (let i = 0; i < n; i++) {
+      const v = o[i];
+      let j = i - 1;
+      while (j >= 0 && s[j] > v) { s[j + 1] = s[j]; j--; }
+      s[j + 1] = v;
+    }
+    const m = n >> 1;
+    return n % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   }
 
   /** While started, take the next confirming reading after stepConfirmMs instead of the next periodic check. */
@@ -199,7 +310,7 @@ export class AudioClockMapper {
   }
 
   private clearPending(): void {
-    this.pendingStep = null; this.pendingCount = 0; this.pendingStamp = 0;
+    this.pendingStep = null; this.pendingBack = false; this.pendingCount = 0; this.pendingStamp = 0;
     if (this.confirmTimer) clearTimeout(this.confirmTimer);
     this.confirmTimer = null;
   }
@@ -207,7 +318,11 @@ export class AudioClockMapper {
   /** Shared time now (seconds). */
   sharedNow(): number { return (this.timeOrigin + this.perfNow()) / 1000; }
 
-  /** Take one sample. Returns false when the context can't give a trustworthy one yet. */
+  /**
+   * Take one sample. Returns false when the context can't give a trustworthy one yet. A real output timestamp
+   * identical to the last one kept adds nothing (it is the same reading) and returns true; while not ready, one
+   * that stays unchanged for STAMP_WAIT_MS (stuck) falls back to `currentTime − latency`, as placeholders do.
+   */
   sample(): boolean {
     const ctx = this.ctx;
     if (ctx.state !== 'running') return false;
@@ -215,8 +330,19 @@ export class AudioClockMapper {
     let offset: number | null = null;
     const ts = typeof ctx.getOutputTimestamp === 'function' ? ctx.getOutputTimestamp() : null;
     if (ts && Number.isFinite(ts.contextTime) && Number.isFinite(ts.performanceTime) && ts.contextTime! >= MIN_STAMP && ts.performanceTime! > 0) {
-      offset = ts.contextTime! - (this.timeOrigin + ts.performanceTime!) / 1000;
       this.waitSince = null; // a real reading: a later run of non-real stamps waits STAMP_WAIT_MS afresh
+      // The same output timestamp again (start() and the first sampleIfNotReady() in one task, or a poll faster
+      // than the output callback) is the reading already kept: it must not count twice towards `ready`.
+      if (ts.contextTime === this.lastStampC && ts.performanceTime === this.lastStampP && this.offsets.length) {
+        // A stamp that stays unchanged while the context runs is stuck: not ready after STAMP_WAIT_MS on it, fall
+        // back to currentTime − latency as for placeholder stamps (0.3.0 counted it three times and got ready).
+        // Once ready, a stuck stamp adds nothing: the anchor it gave is kept.
+        if (this.ready || this.perfNow() - this.stampSince < STAMP_WAIT_MS) return true;
+        if (ctx.currentTime > 0) offset = ctx.currentTime - (this.latency ?? 0) - this.sharedNow();
+      } else {
+        this.lastStampC = ts.contextTime!; this.lastStampP = ts.performanceTime!; this.stampSince = this.perfNow();
+        offset = ts.contextTime! - (this.timeOrigin + ts.performanceTime!) / 1000;
+      }
     } else if (!ts || !(ts.contextTime! >= MIN_STAMP) && !(ts.contextTime! > 0 && !(ts.performanceTime! > 0))) {
       // No timestamp, or none real yet (zeros, or the placeholder Chrome gives for the first output callbacks:
       // contextTime ~0.00002 s while performanceTime runs on, ~20 then ~10 ms off). With a timestamp API, wait up
@@ -235,7 +361,10 @@ export class AudioClockMapper {
   }
 
   /**
-   * True once READY_SAMPLES (3) good samples exist. Pure: reading it never samples (use {@link sampleIfNotReady}
+   * True once READY_SAMPLES (3) good samples exist. It stays true across a confirmed step or a revert (also inside
+   * `onStep`), and across a statechange where the context clock kept pace. It goes false when the anchor is
+   * invalid: an output device change (sinkchange), or a resume after the context clock stood still (a real
+   * suspend); then it takes three new real samples. Pure: reading it never samples (use {@link sampleIfNotReady}
    * to move it along). Until then {@link offset} is only a guess (`currentTime − now`, off by the output
    * latency): wait for `ready` before scheduling against it.
    */
@@ -248,16 +377,14 @@ export class AudioClockMapper {
    */
   sampleIfNotReady(): boolean {
     if (this.ready) return true;
-    const ts = typeof this.ctx.getOutputTimestamp === 'function' ? this.ctx.getOutputTimestamp() : null;
-    const real = !!ts && ts.contextTime! >= MIN_STAMP && ts.performanceTime! > 0;
-    if (!real || ts!.contextTime !== this.readyStamp) { this.readyStamp = real ? ts!.contextTime : undefined; this.sample(); }
+    this.sample();
     return this.ready;
   }
 
   /** contextTime − sharedTime (seconds), median of recent samples, plus the user offset. */
   get offset(): number {
     if (!this.offsets.length) this.sample();
-    const base = this.offsets.length ? median(this.offsets) : this.ctx.currentTime - this.sharedNow();
+    const base = this.offsets.length ? this.median() : this.ctx.currentTime - this.sharedNow();
     return base + this.userOffsetMs / 1000;
   }
 
@@ -276,7 +403,9 @@ export class AudioClockMapper {
     this.timer = setInterval(() => this.sample(), this.intervalMs);
     if (this.stepThreshold > 0) this.stepTimer = setInterval(() => this.checkStep(), this.stepCheckMs);
     this.ctx.addEventListener?.('sinkchange', this.onSink);
-    this.ctx.addEventListener?.('statechange', this.onSink);
+    this.pausedCtx = null;
+    if (this.ctx.state !== 'running') this.onState();
+    this.ctx.addEventListener?.('statechange', this.onState);
   }
 
   /** Stop background sampling. */
@@ -286,8 +415,12 @@ export class AudioClockMapper {
     if (this.stepTimer) clearInterval(this.stepTimer);
     this.stepTimer = null;
     this.clearPending();
+    // No revert window or pause record survives a stop: after a restart, a reading back at an old anchor is a new
+    // step, and a resume is judged from the next pause seen while started.
+    this.revertUntil = -Infinity;
+    this.pausedCtx = null; this.pausedWall = 0;
     this.ctx.removeEventListener?.('sinkchange', this.onSink);
-    this.ctx.removeEventListener?.('statechange', this.onSink);
+    this.ctx.removeEventListener?.('statechange', this.onState);
   }
 
   private readLatency(force: boolean): void {

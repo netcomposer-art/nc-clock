@@ -3,6 +3,76 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
+## [Unreleased]
+
+### Added
+- `AudioClockMapper` treats a step that comes back within `stepRevertMs` (new option, default 200 ms of audio clock
+  time, `0` = off) as a transient: the confirmed step is still applied at once (~20 ms confirmation unchanged),
+  but provisionally; when the readings return to the pre-step anchor inside the window, that anchor is restored
+  exactly, `reanchors` doesn't keep it, the new `reverts` counts it, and `onStep` fires with `revert: true`.
+  From OLIVE Bass hidden-tab run 3 (Olive, ASTRID-Bass docs/sync-results.md).
+- `NcClock.subscribe(listener)`: a replaying subscription. It calls the listener at once with the current state
+  (`{ kind: 'snapshot', snapshot, replay: true }`), then on every change, so a scheduler attached after Tap to join
+  gets a clock on a steady device. `onChange` is unchanged (changes only, now documented). The `snapshot` change
+  gains an optional `replay` flag. Pattern from Rhythm's and Bass's `SnapshotFeed` (Petra, Olive).
+
+### Changed
+- The mapper's median no longer allocates (a reused scratch array), so the 50 ms step check and every `offset`
+  read are allocation-free.
+- `AudioClockMapper.ready` stays true across a confirmed step: the samples move with the step instead of being
+  replaced by one, so `ready` no longer reads false inside `onStep` (Bass worked around it with its own
+  `measured` flag, which it can drop). Suspend/resume: a statechange keeps the samples while the context isn't
+  running; on resume they are kept if the context clock kept pace with wall time (within 10 ms), and dropped
+  (re-measure, `ready` false until three new samples) if it stood still, as a real suspend does. A sinkchange
+  always re-measures. Before, every statechange re-measured.
+- README "Timing guarantee" and docs/nc-clock.md: the numbers are unchanged (re-mapped p95 ≤ 1 ms, max ≤ 3 ms, at
+  most 1 beat over 3 ms per 10 minutes per tab). A reverted excursion (a blip: a confirmed step whose readings come
+  back within `stepRevertMs`) is not a real device clock event and does not claim the one-beat allowance. Beats off
+  during a blip count against the normal limit of at most 1 beat over 3 ms per 10 minutes per tab. Beats during a
+  blip can still be more than 3 ms off: in a 50-seed replay of OLIVE Bass's hidden-tab run 3 (the profile in
+  test/clock-blips.test.ts), the worst beat was 5.3 ms off with and without the provisional step, and 10–13% of beat
+  phases in the 500 ms around the excursion were over 3 ms. Rejecting blips early is deferred until real sessions
+  show it matters.
+
+### Fixed
+- `AudioClockMapper.sample()` keeps one sample per output timestamp. `start()` and the first `sampleIfNotReady()`
+  in the same task read the same stamp, and it counted twice, so `ready` came after two real readings instead of
+  three. Found by Olive (OLIVE Bass).
+- A real output stamp that stays unchanged while the context runs (stuck) no longer leaves the mapper unready
+  forever with that dedupe: after 500 ms (`STAMP_WAIT_MS`) on one unchanged stamp while not ready, it falls back to
+  `currentTime − outputLatency`, as for placeholder stamps. Once ready, a stuck stamp keeps the anchor. (0.3.0
+  counted the stuck stamp three times and was ready in three ticks.) Found in review (Zeta).
+- `NcSyncPeer` forgets a peer's message sequence number when that peer times out (a tab closed without `bye`) and
+  on `stop()`. Before, one entry (about 100 B) per closed tab stayed for the life of the page. Found in ASTRID's
+  multi-tab crash soak (NetComposer-Synth fix/crash-soak 7ea28c8).
+- `AudioClockMapper.stop()` also closes an open revert window and drops the pause record, so after a restart a
+  reading back at an old anchor is a new step, not a revert of a window from before the stop. Found in review (Zeta).
+
+### Migration (consumers)
+Checked against OLIVE Bass `apps/bass/src/app/sync-clock.test.ts` (psemmelhack/ASTRID-Bass, branch
+olive/bass-css-nc-clock at 7bad965, vitest). On 0.3.0 all 6 pass. Three of them rely on 0.3.0 behaviour; on this
+release two fail and one passes but gets there later:
+- "waits for the mapper to be ready (3 real stamps), then publishes an audio-time snapshot at once": it relied on
+  the double-counted stamp (`start()` plus the first `sampleIfNotReady()` on the same stamp counted as two
+  readings, so one more poll made three). One stamp is now one sample, so `ready` needs three distinct stamps: the
+  first snapshot comes one poll later, at `2 × READY_POLL_MS` instead of `READY_POLL_MS`. Advance two polls (fails
+  as written).
+- "a listener added after attachAudio gets the current snapshot at once, even when nothing changes": its context
+  gives one constant real stamp (`{ contextTime: 3, performanceTime: 1000 }`), a stuck stamp. 0.3.0 counted it on
+  every sampler tick and was ready in about three ticks. With one-sample-per-stamp alone it would never get ready;
+  now it falls back to `currentTime − outputLatency` after `STAMP_WAIT_MS` (500 ms) on the unchanged stamp, so it
+  is ready at ~500 ms and the offset comes from the fallback rather than the stamp. Passes as written (exactly at
+  its `REPOST_MS × 2` = 500 ms advance, with no margin); give it a stamp that moves, or advance past 500 ms.
+- "re-arms the ready wait when the mapper re-measures (statechange), and publishes when ready again": it dispatches
+  `statechange` while the context stays `running`. 0.3.0 re-measured on every statechange; now the samples are kept
+  when the context clock kept pace, so `audioSnapshot()` stays non-null and there is no second snapshot (fails as
+  written). To test the re-measure, go `suspended` (dispatch), advance wall time more than 10 ms without
+  `currentTime` moving, then back to `running` (dispatch): the mapper re-measures, `ready` is false, and the ready
+  poll publishes again. A `sinkchange` still always re-measures.
+With the first and third changed as described, all 6 pass on this release (checked locally, nothing pushed to
+Bass). Bass can also drop its own `measured` flag (`ready` now stays true across steps, including inside `onStep`) and its
+`onSnapshot` replay (`NcClock.subscribe`).
+
 ## [0.3.0] - Unreleased
 
 Device clock step handling and a correct first reading for `AudioClockMapper`. **Breaking:** `ready` no longer

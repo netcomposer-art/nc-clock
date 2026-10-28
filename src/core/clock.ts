@@ -58,7 +58,7 @@ export type ClockChange =
   | { kind: 'start'; at: number; beat: number }
   | { kind: 'stop'; at: number; all: boolean }
   | { kind: 'tempo'; atBeat: number; bpm: number }
-  | { kind: 'snapshot'; snapshot: ClockSnapshot };
+  | { kind: 'snapshot'; snapshot: ClockSnapshot; replay?: boolean };
 
 /** Options for {@link NcClock}. */
 export interface NcClockOptions extends TransportOptions {
@@ -95,10 +95,26 @@ export class NcClock {
   /** Hand time to `authority` (null: back to standalone). */
   setAuthority(authority: ClockAuthority | null): void { this.authority = authority; }
 
-  /** Listen to committed changes. Returns an unsubscribe function. */
+  /**
+   * Listen to committed changes from now on (nothing is replayed: a listener added on a steady clock hears nothing
+   * until the next start, stop, tempo change or snapshot). Returns an unsubscribe function. Use {@link subscribe}
+   * when the listener needs the current state too.
+   */
   onChange(listener: (change: ClockChange) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
+  }
+
+  /**
+   * Replaying subscription: `listener` is called at once with the current state as
+   * `{ kind: 'snapshot', snapshot, replay: true }`, then with every committed change, exactly as {@link onChange}.
+   * For a scheduler or worklet attached late (after Tap to join unlocks audio on a steady clock, when no change
+   * will come). Returns an unsubscribe function.
+   */
+  subscribe(listener: (change: ClockChange) => void): () => void {
+    const off = this.onChange(listener);
+    listener({ kind: 'snapshot', snapshot: this.toSnapshot(), replay: true });
+    return off;
   }
 
   /**

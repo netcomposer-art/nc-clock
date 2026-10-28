@@ -191,6 +191,7 @@ export class NcSyncPeer implements ClockAuthority {
     this.channel = null;
     this.clock.setAuthority(null);
     this.peers.clear();
+    this.lastSeq.clear();
   }
 
   /** Hear role changes. Returns an unsubscribe function. */
@@ -412,7 +413,7 @@ export class NcSyncPeer implements ClockAuthority {
     let changed = false;
     for (const p of [...this.peers.values()]) {
       const limit = (p.hidden ? this.o.hiddenPeerTimeoutMs : this.o.peerTimeoutMs) / 1000;
-      if (now - p.lastSeen > limit) { this.peers.delete(p.id); changed = true; }
+      if (now - p.lastSeen > limit) { this.peers.delete(p.id); this.lastSeq.delete(p.id); changed = true; }
     }
     if (changed) { this.emitPeers(); this.elect(); }
     this.sendHeartbeat();

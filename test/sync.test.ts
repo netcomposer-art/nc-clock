@@ -284,3 +284,30 @@ test('swing is loop-safe: handlers that republish do not echo, followers cannot 
     assert.ok(!h.log.some(m => m.type === 'state' && m.from === 'follow'), 'a follower never sends state');
   } finally { leader.stop(); f.peer.stop(); }
 });
+
+test('a peer that vanishes without bye (tab closed) leaves no sequence entry behind once it times out; stop() clears them', async () => {
+  // Found in ASTRID's multi-tab crash soak (NetComposer-Synth fix/crash-soak 7ea28c8): one lastSeq entry (~100 B)
+  // stayed for every tab closed without bye, for the life of the page. 0.3.0 leaves 25 here.
+  const h = hub(), now = { t: 1000 };
+  const a = makePeer(h, 'synth', now);
+  await a.peer.start(); await flush();
+  const internal = a.peer as unknown as { lastSeq: Map<string, number>; beat(): void };
+  for (let i = 0; i < 25; i++) {
+    const gone = makePeer(h, `drums-${i}`, now, { prefersLeader: true });
+    await gone.peer.start(); await flush();
+    assert.equal(a.peer.peers.has(`drums-${i}`), true);
+    const g = gone.peer as unknown as { channel: ChannelLike };
+    g.channel.close(); // closed tab: no bye reaches anyone
+    g.channel = { postMessage() {}, onmessage: null, close() {} };
+    gone.peer.stop(); // only clears its timers now
+    now.t += 4; internal.beat(); await flush();
+    assert.equal(a.peer.peers.size, 0, 'timed out');
+  }
+  assert.equal(internal.lastSeq.size, 0, `${internal.lastSeq.size} sequence entries kept for departed peers`);
+  const b = makePeer(h, 'bass', now);
+  await b.peer.start(); await flush();
+  assert.ok(internal.lastSeq.size > 0, 'a live peer has an entry');
+  a.peer.stop();
+  assert.equal(internal.lastSeq.size, 0, 'stop() clears them');
+  b.peer.stop();
+});
