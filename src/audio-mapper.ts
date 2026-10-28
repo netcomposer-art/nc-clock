@@ -41,8 +41,15 @@ export interface AudioClockMapperOptions {
   stepThresholdMs?: number;
   /** Consecutive agreeing readings that confirm a step. Default 3 (one-off spikes are ignored). */
   stepConfirmations?: number;
-  /** Step check period while started (ms). Default 50, so a step is confirmed ~100–150 ms after it lands. */
+  /** Step check period while started (ms). Default 50: a step is first seen at most ~50 ms after it reaches the output. */
   stepCheckMs?: number;
+  /**
+   * Follow-up delay (ms) while a step is pending and the mapper is started: the confirming readings are taken this
+   * far apart instead of on the next periodic checks. Default 10 (about one output callback), so a step is confirmed
+   * ~20–30 ms after it is first seen instead of 100–150 ms. Each confirmation needs a new output timestamp
+   * (`contextTime` must change). `0` keeps confirmations on the periodic checks.
+   */
+  stepConfirmMs?: number;
 }
 
 /** A confirmed device clock step, as handed to {@link AudioClockMapper.onStep} listeners. */
@@ -112,7 +119,7 @@ export class AudioClockMapper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLatencyRead = -Infinity;
   private latency: number | null = null;
-  private readonly onSink = () => { this.offsets = []; this.pendingStep = null; this.pendingCount = 0; this.waitSince = null; this.readLatency(true); this.sample(); };
+  private readonly onSink = () => { this.offsets = []; this.clearPending(); this.waitSince = null; this.readLatency(true); this.sample(); };
   // When the timestamp had nothing real yet (zeros, or a placeholder below MIN_STAMP), since when (perfNow ms).
   private waitSince: number | null = null;
   private readyStamp: number | undefined = undefined;
@@ -122,6 +129,10 @@ export class AudioClockMapper {
   private stepTimer: ReturnType<typeof setInterval> | null = null;
   private pendingStep: number | null = null;
   private pendingCount = 0;
+  private readonly stepConfirmMs: number;
+  private confirmTimer: ReturnType<typeof setTimeout> | null = null;
+  // contextTime of the last reading counted towards the pending step (the same stamp twice is one reading).
+  private pendingStamp = 0;
   private stepCount = 0;
   private readonly stepListeners = new Set<(step: ClockStep) => void>();
   /** Manual offset in ms (the ±250 ms per-tab slider). */
@@ -139,6 +150,7 @@ export class AudioClockMapper {
     this.stepThreshold = Math.max(0, options.stepThresholdMs ?? 2) / 1000;
     this.stepConfirmations = Math.max(1, options.stepConfirmations ?? 3);
     this.stepCheckMs = options.stepCheckMs ?? 50;
+    this.stepConfirmMs = Math.max(0, options.stepConfirmMs ?? 10);
   }
 
   /** Device clock steps re-anchored so far. */
@@ -158,21 +170,38 @@ export class AudioClockMapper {
     if (this.stepThreshold === 0 || this.ctx.state !== 'running' || !this.offsets.length) return false;
     const ts = typeof this.ctx.getOutputTimestamp === 'function' ? this.ctx.getOutputTimestamp() : null;
     const c = ts?.contextTime ?? 0, p = ts?.performanceTime ?? 0;
-    if (!(c > 0 && p > 0) || !Number.isFinite(c) || !Number.isFinite(p)) return false;
+    // Placeholders (contextTime below MIN_STAMP) and glitch readings (performanceTime 0) never count.
+    if (!(c >= MIN_STAMP && p > 0) || !Number.isFinite(c) || !Number.isFinite(p)) return false;
     const raw = c - (this.timeOrigin + p) / 1000;
     const step = raw - median(this.offsets);
-    if (Math.abs(step) <= this.stepThreshold) { this.pendingStep = null; this.pendingCount = 0; return false; }
+    if (Math.abs(step) <= this.stepThreshold) { this.clearPending(); return false; }
     if (this.pendingStep !== null && Math.abs(step - this.pendingStep) < this.stepThreshold / 2) {
-      if (++this.pendingCount < this.stepConfirmations) return false;
+      // The same output timestamp read again is not a second reading: look again shortly.
+      if (c === this.pendingStamp) { this.followUp(); return false; }
+      this.pendingStamp = c;
+      if (++this.pendingCount < this.stepConfirmations) { this.followUp(); return false; }
       this.offsets = [raw];
-      this.pendingStep = null; this.pendingCount = 0; this.stepCount++;
+      this.clearPending(); this.stepCount++;
       const event: ClockStep = { stepSeconds: step, confirmedAt: this.ctx.currentTime, reanchors: this.stepCount };
       for (const l of [...this.stepListeners]) l(event);
       return true;
     }
-    this.pendingStep = step; this.pendingCount = 1;
+    this.pendingStep = step; this.pendingCount = 1; this.pendingStamp = c;
     if (this.stepConfirmations === 1) return this.checkStep();
+    this.followUp();
     return false;
+  }
+
+  /** While started, take the next confirming reading after stepConfirmMs instead of the next periodic check. */
+  private followUp(): void {
+    if (!this.stepTimer || this.stepConfirmMs === 0 || this.confirmTimer) return;
+    this.confirmTimer = setTimeout(() => { this.confirmTimer = null; this.checkStep(); }, this.stepConfirmMs);
+  }
+
+  private clearPending(): void {
+    this.pendingStep = null; this.pendingCount = 0; this.pendingStamp = 0;
+    if (this.confirmTimer) clearTimeout(this.confirmTimer);
+    this.confirmTimer = null;
   }
 
   /** Shared time now (seconds). */
@@ -256,6 +285,7 @@ export class AudioClockMapper {
     this.timer = null;
     if (this.stepTimer) clearInterval(this.stepTimer);
     this.stepTimer = null;
+    this.clearPending();
     this.ctx.removeEventListener?.('sinkchange', this.onSink);
     this.ctx.removeEventListener?.('statechange', this.onSink);
   }

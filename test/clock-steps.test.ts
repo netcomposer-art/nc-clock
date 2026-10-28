@@ -156,3 +156,60 @@ test('first reading: a real reading resets the 500 ms wait, so a later run of ze
   d.perf += 499; assert.equal(m.sample(), false);
   d.perf += 2; assert.equal(m.sample(), true, 'falls back 500 ms into this run of zeros');
 });
+
+test('clock steps: while started, a step is confirmed ~20 ms after it is first seen (follow-ups 10 ms apart), not 100–150 ms', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const d = device();
+  const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
+  const steps: number[] = [];
+  m.onStep(() => steps.push(d.perf));
+  m.start();
+  const tick = (ms: number) => { for (let i = 0; i < ms; i++) { d.perf += 1; t.mock.timers.tick(1); } };
+  tick(2000);
+  assert.equal(m.reanchors, 0);
+  const at = d.perf;
+  d.shift = 0.01;
+  tick(200);
+  m.stop();
+  assert.equal(steps.length, 1, 'one re-anchor');
+  const window = steps[0] - at;
+  assert.ok(window <= 50 + 2 * 10 + 1, `confirmed ${window} ms after the step (check period 50 + two 10 ms follow-ups)`);
+  assert.ok(Math.abs(m.offset - (d.currentTime - (ORIGIN + d.perf) / 1000)) < 1e-6, 'offset follows the step');
+});
+
+test('clock steps: the same output timestamp read again is not a confirmation, and a one-off spike is dropped within one follow-up', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const d = device();
+  const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
+  m.start();
+  const tick = (ms: number) => { for (let i = 0; i < ms; i++) { d.perf += 1; t.mock.timers.tick(1); } };
+  tick(1000);
+  // A frozen (stale) stepped stamp: three reads of one output timestamp must not confirm.
+  const frozen = { contextTime: d.currentTime + 0.01, performanceTime: d.perf };
+  const real = d.getOutputTimestamp;
+  d.getOutputTimestamp = () => frozen;
+  tick(120);
+  assert.equal(m.reanchors, 0, 'one stamp read three times is one reading');
+  // A one-off spike: the next follow-up 10 ms later reads normal again and clears it.
+  d.getOutputTimestamp = real;
+  tick(200);
+  let once = true;
+  d.getOutputTimestamp = () => {
+    const ts = real();
+    if (!once) return ts;
+    once = false;
+    return { contextTime: ts.contextTime + 0.0105, performanceTime: ts.performanceTime };
+  };
+  tick(500);
+  m.stop();
+  assert.equal(m.reanchors, 0, 'spikes ignored');
+});
+
+test('clock steps: placeholder stamps (contextTime below 3 ms) never count towards a step', () => {
+  const d = device();
+  const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
+  run(d, m, 1000);
+  d.getOutputTimestamp = () => ({ contextTime: 0.00004, performanceTime: d.perf });
+  run(d, m, 500);
+  assert.equal(m.reanchors, 0);
+});

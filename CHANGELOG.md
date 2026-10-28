@@ -27,6 +27,13 @@ takes a sample (see Changed and the migration note).
   re-anchors on a confirmed step. Options: `stepThresholdMs` (2, `0` = off), `stepConfirmations` (3) and
   `stepCheckMs` (50). New: `checkStep()`, `onStep(listener)` and `reanchors`. Zero output timestamps never count.
 - `retimeForStep(when, step, renderedUntil)` and the `ClockStep` type, for schedulers that queue events ahead.
+- Faster step confirmation: new option `stepConfirmMs` (10). Once a reading looks stepped, the confirming readings
+  are taken that far apart instead of on the next periodic checks, so a step is confirmed ~20 ms after it is first
+  seen instead of 100–150 ms. Each confirming reading must come from a new output timestamp (the same stamp read
+  twice no longer counts twice), and placeholder stamps never count towards a step. `stepConfirmMs: 0` restores
+  confirmation on the periodic checks. From ASTRID Rhythm (Petra).
+- `examples/metronome` re-times queued clicks on a confirmed step (cancel and re-create every click not yet
+  rendered), as the docs describe for queued schedulers.
 - docs/nc-clock.md: "Device clock steps". Approach and constants from OLIVE Bass `clock-link` (Olive); patch by
   Petra (ASTRID Rhythm). Not a wire change.
 
