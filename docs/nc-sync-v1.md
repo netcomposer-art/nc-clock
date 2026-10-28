@@ -57,6 +57,8 @@ newcomer learns who is present.
 Every ~1 s: `app`, `leader` (bool), `audio`, `hidden` (bool), `outputLatencyMs`, `joinedAt`, `capabilities`, and
 `playing` (bool) with `independentStop`. A peer with `independentStop` also sends a heartbeat at once when its
 `playing` changes.
+A peer that knows no other peer MAY stop beating while alone, until one appears (nobody is listening; every peer
+still answers a `hello` with a heartbeat, so a newcomer learns who is there).
 Hidden tabs are throttled by browsers, so a peer with `hidden: true` MAY beat as rarely as once a minute. Peers
 SHOULD consider a visible peer gone after 3 s of silence, and a hidden one after 65 s.
 

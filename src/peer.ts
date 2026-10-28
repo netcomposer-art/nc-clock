@@ -95,7 +95,7 @@ export interface NcSyncPeerOptions {
    * session-wide stop. Default false: every Stop is a session stop, exactly as in 0.3.0.
    */
   independentStop?: boolean;
-  /** Heartbeat period (ms). Default 1000. */
+  /** Heartbeat period (ms). Default 1000. The timer runs only while another peer is known (see `beating`). */
   heartbeatMs?: number;
   /** A visible peer is gone after this silence (ms). Default 3000. */
   peerTimeoutMs?: number;
@@ -201,7 +201,8 @@ export class NcSyncPeer implements ClockAuthority {
     this.joinedAt = this.o.now();
     this.clock.setAuthority(this);
     this.send({ type: 'hello', app: this.o.app, version: this.o.version, capabilities: this.caps, audio: this.o.audio(), outputLatencyMs: this.o.outputLatencyMs(), joinedAt: this.joinedAt, ...this.memberField() });
-    this.heartbeat = setInterval(() => this.beat(), this.o.heartbeatMs);
+    // Heartbeats only while another peer is here (syncHeartbeat): alone, nobody listens, and an idle page must
+    // not wake every second. A newcomer still learns about us: everyone answers its `hello` with a heartbeat.
     if (this.locks) this.elect();
     else this.grace = setTimeout(() => { this.grace = null; this.elect(); }, this.o.joinGraceMs);
   }
@@ -553,7 +554,15 @@ export class NcSyncPeer implements ClockAuthority {
     this.send({ type: 'heartbeat', app: this.o.app, leader: this.leader, audio: this.o.audio(), hidden: this.o.hidden(),
       outputLatencyMs: this.o.outputLatencyMs(), joinedAt: this.joinedAt, capabilities: this.caps, ...this.memberField() });
   }
-  private emitPeers(): void { const list = [...this.peers.values()]; for (const l of [...this.peerListeners]) l(list); }
+  private emitPeers(): void { this.syncHeartbeat(); const list = [...this.peers.values()]; for (const l of [...this.peerListeners]) l(list); }
+  /** Run the heartbeat timer only while joined and at least one other peer is known. */
+  private syncHeartbeat(): void {
+    const want = !!this.channel && this.peers.size > 0;
+    if (want && !this.heartbeat) this.heartbeat = setInterval(() => this.beat(), this.o.heartbeatMs);
+    else if (!want && this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+  }
+  /** True while the heartbeat timer runs (diagnostics and tests). */
+  get beating(): boolean { return this.heartbeat !== null; }
   private send<M extends NcSyncMessage>(body: MessageBody<M> | Record<string, unknown>): void {
     if (!this.channel) return;
     this.channel.postMessage(envelope(body as MessageBody<M>, this.id, this.term, ++this.seq, this.o.now()));
