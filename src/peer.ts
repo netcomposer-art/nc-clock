@@ -434,7 +434,8 @@ export class NcSyncPeer implements ClockAuthority {
         if (memberChanged) this.emitPeers();
         if (memberChanged && playing === true) this.keepRunForJoin();
         const edit = readSwing((m as HeartbeatMessage).swing); // heartbeat only
-        if (edit !== null) { this.editSwing = edit; this.editAt = m.sentAt; if (this.leader) this.broadcastState(); }
+        // Only from a peer playing in the running session (an older peer, with no member state, counts as playing).
+        if (edit !== null && playing !== false && this.clock.transport.running) { this.editSwing = edit; this.editAt = m.sentAt; if (this.leader) this.broadcastState(); }
         // Answer a newcomer: the leader with the clock, everyone with a heartbeat (so it knows who is here).
         if (m.type === 'hello') { if (this.leader) this.broadcastState(); this.sendHeartbeat(); }
         this.elect();
