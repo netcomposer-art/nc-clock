@@ -112,6 +112,41 @@ queued notes on the current mapping while the audio clock drifts.
 npm install && npm run example     # then open http://localhost:8080/examples/metronome/ in two tabs
 ```
 
+### 5. Stop only this instrument (independent stop, 0.5.0)
+
+By default (as in 0.4.0 and earlier) Stop in any app stops the shared transport, so every app stops. Pass
+`independentStop: true` and Stop is per instrument: the session grid keeps running for the others, and it ends
+only when the last instrument stops. Play while others play joins the running grid on the next beat (tempo, meter
+and swing included); it never restarts it. If the leader stops, the lead moves to a playing tab with the snapshot
+unchanged, so nobody hears a jump.
+
+```ts
+const peer = new NcSyncPeer({ app: 'My App', version: '1.0.0', clock, independentStop: true });
+
+playButton.onclick = () => clock.play({ at: sharedNow() });   // starts the session, or joins it
+stopButton.onclick = () => clock.stop({ at: sharedNow() });   // this instrument only
+// clock.stop({ at, all: true }) is the explicit stop-all: it ends the session for everyone.
+
+// Gate your scheduler on *this instrument's* state, not the session's (keep the step 4 handler for
+// 'start' and 'snapshot' changes too: a fresh session starts with a 'member' change, then a 'start'):
+clock.onChange(change => {
+  if (change.kind === 'member' && change.playing) nextBeat = clock.joinPoint(sharedNow()).beat;  // the next grid line
+});
+createTicker(() => {
+  const t = clock.transport, now = mapper.toSharedTime(ctx.currentTime);
+  while (clock.playing && t.running && t.timeAt(nextBeat) < now + 0.15) {
+    const at = t.timeAt(nextBeat);
+    if (clock.isPlayingAt(at)) playClick(mapper.toContextTime(at), nextBeat % 4 === 0);
+    nextBeat += 1;
+  }
+}).start();
+```
+
+`clock.playing` is this instrument; `clock.transport.running` is the session. Every app in a session must use
+`independentStop: true`: there is no fallback for mixed sessions (all instruments ship together from one domain).
+[examples/three-tab](examples/three-tab) is a runnable version, and `test/e2e/three-tab.mjs` drives three
+instrument tabs through the whole scenario (instruments can run it in their own suites; see the file).
+
 ---
 
 ## API reference
@@ -125,8 +160,8 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 |---|---|
 | `new TempoMap({ bpm, anchor?, minBpm?, maxBpm?, maxPoints? })` | Piecewise-constant tempo from an anchor. `timeAt(beat)`, `beatAt(time)`, `bpmAt(beat)`, `setTempoAt(bpm, beat)`, `rampTempo(toBpm, startBeat, beats, stepBeats?)` (a ramp as small steps), `restart(anchor, bpm)`, `shift(seconds)`, `clone()`. |
 | `new Transport({ bpm?, meter?, minBpm?, maxBpm? })` | A tempo map plus start/stop. `start({ at, beat?, bpm? })`, `stop({ at })`, `running`, `isPlayingAt(t)`, `beatAt(t)` (frozen while stopped), `timeAt(beat)`, `setTempo(bpm, atBeat?)`, `position(beat)` → `{ bar, beatInBar, barPhase }`, `nextBar(beat)`, `meter`. |
-| `new NcClock({ bpm?, meter?, timebase? })` | A transport with an **authority seam**. `play(req)`, `stop(req)`, `setTempo(req)`: standalone they apply at once (and return `true`); with an authority set they become requests (and return `false`). `commitStart/commitStop/commitTempo`, `applySnapshot(s)`, `toSnapshot()`, `onChange(fn)` (changes from now on), `subscribe(fn)` (the current state at once as `{ kind: 'snapshot', replay: true }`, then every change), `setAuthority(a)`, `external`. |
-| `ClockAuthority` | `{ requestStart, requestStop, requestTempo }`: implement it to plug in any sync source (NC Sync, MIDI clock, Ableton Link bridge, a server). |
+| `new NcClock({ bpm?, meter?, timebase? })` | A transport with an **authority seam**. `play(req)`, `stop(req)`, `setTempo(req)`: standalone they apply at once (and return `true`); with an authority set they become requests (and return `false`). `playing` (this instrument: with an `independentStop` authority its own play state, else `transport.running`), `isPlayingAt(t)` (`playing` and the transport plays at `t`), `joinPoint(t, gridBeats = 1)` → `{ beat, time }` (the next grid line at or after `t`), `commitStart/commitStop/commitTempo`, `commitMember(playing, at)` (authorities only; emits `{ kind: 'member', playing, at }`), `applySnapshot(s)`, `toSnapshot()`, `onChange(fn)` (changes from now on), `subscribe(fn)` (the current state at once as `{ kind: 'snapshot', replay: true }`, then every change), `setAuthority(a)`, `external`. |
+| `ClockAuthority` | `{ requestStart, requestStop, requestTempo, independentStop? }`: implement it to plug in any sync source (NC Sync, MIDI clock, Ableton Link bridge, a server). |
 | `toSnapshot(transport, timebase)` / `fromSnapshot(snap)` / `applySnapshot(transport, snap)` | JSON-safe state, `version: 1`. A round trip gives identical `beatAt`/`timeAt` results. |
 | `shiftSnapshot(snap, offsetSeconds, timebase)` | Move a snapshot to another timeline (e.g. shared time → AudioContext time). |
 | `validateSnapshot(x)` | Throws on a malformed snapshot. |
@@ -141,7 +176,7 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 | `retimeForStep(when, step, renderedUntil)` | Moves a queued context-time event by a confirmed step if it is not yet rendered. |
 | `createTicker(onTick, { intervalMs?, worker? })` | A ~20 ms tick from a Worker timer (not throttled in hidden tabs) plus a main-thread fallback, de-duplicated. `start()`, `stop()`, `dispose()`, `kind`. |
 | `sharedNow()` | Shared time: `(performance.timeOrigin + performance.now()) / 1000`. |
-| `new NcSyncPeer({ app, version, clock, capabilities?, channel?, locks?, … })` | An NC Sync v1 participant. `start()`, `stop()`, `isLeader`, `peers`, `onRole(fn)`, `onPeers(fn)`, `onSnapshot(fn)`, `onMessage(fn)`, `sendSnapshot(op, slot, extra?)`, `tempoRange()`. Swing: pass `swing: () => value` (0.5 straight to 0.75) to send yours while leading; read the session's with `swing` (null until a leader sets one) and `onSwing(fn)`; call `publishState()` after a swing edit (leader only; returns false on a follower). |
+| `new NcSyncPeer({ app, version, clock, capabilities?, channel?, locks?, independentStop?, … })` | An NC Sync v1 participant. `independentStop: true` makes Stop per instrument (section 5 above; default `false`, the behaviour of 0.4.0 and earlier); `independentStop` and `playing` read it back, and `peers` entries carry `independentStop` and `playing` (null when unknown). `start()`, `stop()`, `isLeader`, `peers`, `onRole(fn)`, `onPeers(fn)`, `onSnapshot(fn)`, `onMessage(fn)`, `sendSnapshot(op, slot, extra?)`, `tempoRange()`. Swing: pass `swing: () => value` (0.5 straight to 0.75) to send yours while leading; read the session's with `swing` (null until a leader sets one) and `onSwing(fn)`; call `publishState()` after every swing edit: the leader resends `state`, a follower sends the edit to the leader, which applies it for everyone (returns false when not joined). |
 
 ### Protocol
 
