@@ -67,7 +67,7 @@ sequencer), in Node, or ported to another language.
    unlocks audio) uses `clock.subscribe(...)` instead: it gets the current state at once (`kind: 'snapshot'`,
    `replay: true`), since a steady clock sends no change it could wait for. Map it with `mapper.offset` once
    `mapper.ready`, and repost on `mapper.onStep`.
-6. **Stop only yourself** (0.4.0): pass `independentStop: true` to `NcSyncPeer`, and gate your scheduler on
+6. **Stop only yourself** (0.5.0): pass `independentStop: true` to `NcSyncPeer`, and gate your scheduler on
    `clock.playing` / `clock.isPlayingAt(t)` (this instrument) rather than `clock.transport.running` (the session).
    On a `{ kind: 'member', playing: true }` change, start from `clock.joinPoint(now).beat`, the next grid line.
    Stop then leaves the others playing, Play joins a running session without restarting it, and the session

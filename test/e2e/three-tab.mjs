@@ -1,4 +1,4 @@
-// Three-tab independent-stop e2e (nc-clock 0.4.0). Instruments run this same harness in their own suites.
+// Three-tab independent-stop e2e (nc-clock 0.5.0). Instruments run this same harness in their own suites.
 //
 //   node test/e2e/three-tab.mjs [port]        # serves this repo, opens examples/three-tab/ in three tabs
 //   PLAYWRIGHT_CORE=/path/to/playwright-core/index.mjs  (default: import 'playwright-core')

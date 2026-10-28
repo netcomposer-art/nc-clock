@@ -44,9 +44,9 @@ export interface Capabilities {
   /** Optional free-form modes the peer syncs in (e.g. `["generator", "arp"]`). */
   modes?: string[];
   /**
-   * Stop is per instrument (nc-clock 0.4.0, `NcSyncPeer({ independentStop: true })`): the peer sends its own
+   * Stop is per instrument (nc-clock 0.5.0, `NcSyncPeer({ independentStop: true })`): the peer sends its own
    * `playing` in `hello` and `heartbeat`, its Stop stops only itself, and the session (the shared transport) ends
-   * when the last instrument stops. Absent (older peers) means false: a Stop is a session stop, as in nc-clock 0.3.0.
+   * when the last instrument stops. Absent (older peers) means false: a Stop is a session stop, as in nc-clock 0.4.0 and earlier.
    */
   independentStop?: boolean;
 }

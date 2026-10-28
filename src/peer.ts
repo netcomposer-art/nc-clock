@@ -5,7 +5,7 @@
  * requests, the leader decides when they land, and every peer applies the
  * leader's `state` snapshot.
  *
- * With `independentStop: true` (nc-clock 0.4.0) the shared transport is the
+ * With `independentStop: true` (nc-clock 0.5.0) the shared transport is the
  * session grid and each instrument has its own play state on it: Play joins a
  * running grid (it never restarts it), Stop stops only this instrument, the
  * leader ends the session when the last instrument stops, and a stopped leader
@@ -53,7 +53,7 @@ export interface PeerInfo {
   lastSeen: number;
   /** Output latency it reported (ms). */
   outputLatencyMs: number | null;
-  /** It has per-instrument Stop (`capabilities.independentStop`, nc-clock 0.4.0). */
+  /** It has per-instrument Stop (`capabilities.independentStop`, nc-clock 0.5.0). */
   independentStop: boolean;
   /** Its own play state (`independentStop` peers), or null for an older peer, which plays whenever the session does. */
   playing: boolean | null;
@@ -89,10 +89,10 @@ export interface NcSyncPeerOptions {
    */
   swing?: () => number | null | undefined;
   /**
-   * Per-instrument Stop (nc-clock 0.4.0, NC Sync capability `independentStop`). Stop stops only this instrument and
+   * Per-instrument Stop (nc-clock 0.5.0, NC Sync capability `independentStop`). Stop stops only this instrument and
    * Play joins a running session grid; {@link NcClock.playing} is then this instrument's own state, so the engine
    * must gate its sound and playhead on it (or on `member` changes). `clock.stop({ all: true })` is still a
-   * session-wide stop. Default false: every Stop is a session stop, exactly as in 0.3.0.
+   * session-wide stop. Default false: every Stop is a session stop, exactly as in 0.4.0 and earlier.
    */
   independentStop?: boolean;
   /** Heartbeat period (ms). Default 1000. The timer runs only while another peer is known (see `beating`). */

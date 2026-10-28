@@ -1,4 +1,4 @@
-// Per-instrument Stop (nc-clock 0.4.0, NC Sync capability `independentStop`). P1 from live netcomposer.art: Stop in
+// Per-instrument Stop (nc-clock 0.5.0, NC Sync capability `independentStop`). P1 from live netcomposer.art: Stop in
 // any instrument tab stopped all of them (requestStop -> leader decideStop -> commitStop on the shared transport ->
 // every peer applied `state` with playing:false). Now Stop is a member state; the session ends with the last one.
 import test from 'node:test';
@@ -235,17 +235,17 @@ test('mixed versions: an older peer\'s Stop stops everyone; new Stops never end 
   const h = hub();
   const a = tab(h, 'a-new', now); await a.peer.start(); await flush();
   now.t += 1;
-  const old = tab(h, 'b-old', now, { indep: false }); await old.peer.start(); await flush(); // 0.3.0 wire and behaviour
+  const old = tab(h, 'b-old', now, { indep: false }); await old.peer.start(); await flush(); // 0.4.0 wire and behaviour (no independentStop)
   now.t += 1;
   const c = tab(h, 'c-new', now); await c.peer.start(); await flush();
-  assert.ok(!h.log.some(m => m.from === 'b-old' && ('playing' in m || 'independentStop' in m)), 'the old peer speaks the 0.3.0 wire');
+  assert.ok(!h.log.some(m => m.from === 'b-old' && ('playing' in m || 'independentStop' in m)), 'the old peer speaks the 0.4.0 wire');
   assert.equal(a.peer.peers.get('b-old')?.playing, null);
   a.clock.play({ at: now.t }); await flush();
   c.clock.play({ at: now.t }); await flush();
   assert.equal(old.clock.playing, true, 'an older peer plays whenever the session does (as today)');
   a.clock.stop({ at: now.t }); c.clock.stop({ at: now.t }); await flush();
   assert.equal(a.clock.transport.running, true, 'the older peer is still playing');
-  assert.deepEqual(leaderOf(a, old, c), ['a-new'], 'mixed session keeps the 0.3.0 ranking: one leader, no handoff');
+  assert.deepEqual(leaderOf(a, old, c), ['a-new'], 'mixed session keeps the 0.4.0 ranking: one leader, no handoff');
   c.clock.play({ at: now.t }); await flush();
   now.t += 0.6; old.clock.stop({ at: now.t }); await flush();
   const last = states(h).at(-1)!;

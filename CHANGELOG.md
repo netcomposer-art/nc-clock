@@ -3,9 +3,11 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
-## [0.4.0] - Unreleased
+## [0.5.0] - Unreleased
 
-Independent stop. This release also carries the [Unreleased] changes below (they have not shipped yet).
+Independent stop. Released after 0.4.0 (#4, snapshot `cancel`; #5, heartbeat only while another peer is known),
+in merge order. This branch carries #5's commits (cherry-picked), so the [Unreleased] changes below are in it too;
+merge #5 first.
 
 ### Added
 - Per-instrument Stop, opt-in: `new NcSyncPeer({ …, independentStop: true })`. Stop in one tab stops only that
@@ -25,10 +27,10 @@ Independent stop. This release also carries the [Unreleased] changes below (they
   implement to run it in their own suites. `npm run e2e` (needs `playwright-core`; set `PLAYWRIGHT_CORE`).
 
 ### Compatibility
-- Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.3.0.
+- Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.4.0 and earlier.
 - Mixed sessions: next to a peer without the capability, an `independentStop` peer counts it as playing while the
   session runs, an old peer's Stop ends the session for everyone, an old peer's Play on a running session joins it
-  (an `independentStop` leader never restarts a running grid), and every peer uses the 0.3.0 leader ranking, so
+  (an `independentStop` leader never restarts a running grid), and every peer uses the earlier (0.4.0) leader ranking, so
   old and new peers agree on one leader (no play-state handoff in a mixed session).
 
 ## [Unreleased]
