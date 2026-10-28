@@ -123,7 +123,7 @@ export class NcClock {
    * after the beat at `time` (default: the next whole beat), and when it sounds. Joining never moves the grid.
    */
   joinPoint(time: number, gridBeats = 1): { beat: number; time: number } {
-    const beat = nextGridBeat(this.transport.beatAt(time), gridBeats);
+    const beat = nextGridBeat(this.transport.beatAt(time), gridBeats) + 0; // + 0: never -0
     return { beat, time: this.transport.timeAt(beat) };
   }
 
