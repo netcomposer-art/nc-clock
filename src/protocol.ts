@@ -79,8 +79,42 @@ export interface StateMessage extends Envelope {
 export interface TransportMessage extends Envelope { type: 'transport'; action: 'start' | 'stop'; atBeat?: number; all?: boolean }
 /** Request (to the leader) to change tempo. */
 export interface TempoMessage extends Envelope { type: 'tempo'; bpm: number; atBeat?: number; rampBeats?: number }
-/** Snapshot slot action, for any peer. `recall` is idempotent; `store` is opt-in per app. */
-export interface SnapshotMessage extends Envelope { type: 'snapshot'; op: 'recall' | 'stopSequence' | 'store'; slot: number; atBeat?: number; glide?: { beats?: number; seconds?: number } }
+/**
+ * Snapshot slot action, for any peer. `recall` is idempotent; `store` is opt-in per app.
+ * `cancel` withdraws the sender's own pending (held, not yet taken) `recall`; see {@link cancelsRecall}.
+ */
+export interface SnapshotMessage extends Envelope {
+  type: 'snapshot'; op: 'recall' | 'stopSequence' | 'store' | 'cancel';
+  /** Slot number: a non-negative integer. On `cancel`: the slot of the recall being withdrawn, or {@link ANY_SLOT}. */
+  slot: number;
+  atBeat?: number; glide?: { beats?: number; seconds?: number };
+  /** `cancel` only, optional: the `seq` of the sender's recall being withdrawn (an integer ≥ 1, below the cancel's own
+   * `seq`). Recalls with a higher `seq` survive. Ignored on other ops. */
+  recallSeq?: number;
+}
+
+/** `slot` value for a `cancel` that withdraws the sender's pending recall whatever its slot. Real slots are ≥ 0. */
+export const ANY_SLOT = -1;
+
+/**
+ * Snapshot ops defined by v1; {@link parseMessage} drops a snapshot with any other op. Receivers before nc-clock 0.4.0
+ * don't know `cancel` and drop it. A new op must be safe for older receivers to ignore.
+ */
+export const SNAPSHOT_OPS = ['recall', 'stopSequence', 'store', 'cancel'] as const;
+
+/**
+ * Does `cancel` withdraw the pending `recall` a receiver is holding? True when both are snapshot messages from the
+ * same sender, `cancel` is an `op: "cancel"` sent after the recall (higher `seq`), its `slot` is {@link ANY_SLOT}
+ * or the recall's slot, and its `recallSeq` (when present) is at or after the recall's `seq` and before its own.
+ * Pure, allocation-free.
+ * A cancel that arrives after the recall was taken (its bar line has passed) is a no-op: there is nothing held.
+ */
+export function cancelsRecall(cancel: SnapshotMessage, recall: SnapshotMessage): boolean {
+  if (cancel.op !== 'cancel' || recall.op !== 'recall' || cancel.from !== recall.from) return false;
+  if (cancel.seq <= recall.seq) return false;
+  if (cancel.slot !== ANY_SLOT && cancel.slot !== recall.slot) return false;
+  return cancel.recallSeq === undefined || (cancel.recallSeq >= recall.seq && cancel.recallSeq < cancel.seq);
+}
 /** Relay mode only: round-trip probe. */
 export interface PingMessage extends Envelope { type: 'ping'; id: string }
 /** Relay mode only: answer to `ping`. */
@@ -119,6 +153,16 @@ export const DEFAULT_CAPABILITIES: Readonly<Capabilities> = Object.freeze({
 const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
 const str = (v: unknown) => typeof v === 'string' && v.length > 0;
 
+const int = (v: unknown): v is number => Number.isInteger(v);
+/** Snapshot body check: a known op; an integer slot, ≥ 0 (or {@link ANY_SLOT} on cancel); a cancel's `recallSeq`
+ * an integer ≥ 1 below its own `seq`. Allocation-free. */
+function validSnapshot(m: Record<string, unknown>): boolean {
+  if (!(SNAPSHOT_OPS as readonly unknown[]).includes(m.op) || !int(m.slot)) return false;
+  if (m.op !== 'cancel') return m.slot >= 0;
+  if (m.slot < 0 && m.slot !== ANY_SLOT) return false;
+  return m.recallSeq === undefined || (int(m.recallSeq) && m.recallSeq >= 1 && m.recallSeq < (m.seq as number));
+}
+
 /**
  * Validate an incoming value. Returns the typed message, or null when it is not NC Sync v1,
  * is malformed, or has an unknown type (unknown types are ignored, not errors).
@@ -136,7 +180,7 @@ export function parseMessage(value: unknown): NcSyncMessage | null {
     case 'state': return m.clock && typeof m.clock === 'object' ? m as unknown as StateMessage : null;
     case 'transport': return m.action === 'start' || m.action === 'stop' ? m as unknown as TransportMessage : null;
     case 'tempo': return num(m.bpm) && (m.bpm as number) > 0 ? m as unknown as TempoMessage : null;
-    case 'snapshot': return (m.op === 'recall' || m.op === 'stopSequence' || m.op === 'store') && num(m.slot) ? m as unknown as SnapshotMessage : null;
+    case 'snapshot': return validSnapshot(m) ? m as unknown as SnapshotMessage : null;
     case 'ping': case 'pong': return str(m.id) ? m as unknown as PingMessage | PongMessage : null;
     case 'notes': return Array.isArray(m.notes) ? m as unknown as NotesMessage : null;
     default: return null;

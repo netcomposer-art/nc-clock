@@ -1,6 +1,6 @@
 // A real output stamp that never changes while the context runs (a stuck timestamp) must not leave the mapper
 // unready forever: after STAMP_WAIT_MS (500 ms) on one unchanged stamp it falls back to currentTime − latency, as for
-// placeholder stamps. 0.3.0 got ready in three ticks (it counted the one stamp three times); d07b8dd's dedupe alone
+// placeholder stamps. The 0.3.0 pre-release (b753634) got ready in three ticks (it counted the one stamp three times); d07b8dd's dedupe alone
 // never did.
 import test from 'node:test';
 import assert from 'node:assert/strict';

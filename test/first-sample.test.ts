@@ -1,5 +1,5 @@
 // One output timestamp is one sample: start() and the first sampleIfNotReady() in the same task read the same
-// stamp, and it must not count twice towards `ready` (0.3.0 counted it twice: ready after two real readings).
+// stamp, and it must not count twice towards `ready` (the 0.3.0 pre-release, b753634, counted it twice: ready after two real readings).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AudioClockMapper } from '../src/audio-mapper.js';
@@ -25,7 +25,7 @@ test('first sample: start() then sampleIfNotReady() on the same stamp is one rea
   m.start();                                           // samples stamp A
   assert.equal(m.sampleIfNotReady(), false);           // stamp A again: nothing new
   d.perf += 3;
-  assert.equal(m.sampleIfNotReady(), false, 'two distinct stamps: not ready yet (0.3.0 said ready here)');
+  assert.equal(m.sampleIfNotReady(), false, 'two distinct stamps: not ready yet (b753634 said ready here)');
   d.perf += 3;
   assert.equal(m.sampleIfNotReady(), true, 'third distinct stamp: ready');
   m.stop();

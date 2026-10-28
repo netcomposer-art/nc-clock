@@ -55,7 +55,7 @@ export interface AudioClockMapperOptions {
    * come back to the anchor from before it (within `stepThresholdMs`, confirmed like a step) within this window, it
    * was a transient, not a device clock step. The mapper then restores that anchor exactly (all its samples), counts
    * no lasting re-anchor, and `onStep` fires with `revert: true`. Default 200. `0` turns it off (every confirmed
-   * step is final, as in 0.3.0).
+   * step is final, as in the 0.3.0 pre-release, b753634).
    */
   stepRevertMs?: number;
 }
@@ -335,7 +335,7 @@ export class AudioClockMapper {
       // than the output callback) is the reading already kept: it must not count twice towards `ready`.
       if (ts.contextTime === this.lastStampC && ts.performanceTime === this.lastStampP && this.offsets.length) {
         // A stamp that stays unchanged while the context runs is stuck: not ready after STAMP_WAIT_MS on it, fall
-        // back to currentTime − latency as for placeholder stamps (0.3.0 counted it three times and got ready).
+        // back to currentTime − latency as for placeholder stamps (the 0.3.0 pre-release, b753634, counted it three times and got ready).
         // Once ready, a stuck stamp adds nothing: the anchor it gave is kept.
         if (this.ready || this.perfNow() - this.stampSince < STAMP_WAIT_MS) return true;
         if (ctx.currentTime > 0) offset = ctx.currentTime - (this.latency ?? 0) - this.sharedNow();
