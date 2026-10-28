@@ -35,6 +35,8 @@ Backward compatible on the wire, not for every listener or type:
   exhaustive `switch (m.op)` needs a `'cancel'` case. Rhythm, Bass and ASTRID all check `op === 'recall'` (or don't
   listen), so none breaks.
 - `SnapshotMessage['op']` widened to include `'cancel'`; `sendSnapshot`'s `op` parameter excludes it.
+- Receivers now drop recalls with a negative or non-integer slot (and `sendSnapshot` throws for one). Receivers
+  before 0.4.0 passed them on.
 - `sendSnapshot` returns `number`: a typed fake such as `Pick<NcSyncPeer, 'sendSnapshot'>` returning `void`, or an
   expression-bodied arrow annotated `: void` that returns the call, no longer compiles. Plain calls are unaffected.
 
