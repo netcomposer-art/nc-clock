@@ -193,7 +193,7 @@ Every message carries the envelope:
 { "proto": "nc-sync/1", "type": "tempo", "from": "3f2a…", "term": 4, "seq": 11, "sentAt": 1761580811.4, "bpm": 96 }
 ```
 
-**heartbeat** (about every second), **bye**, **snapshot** (recall a preset slot on a beat), and **ping/pong**
+**heartbeat** (about every second while another peer is here), **bye**, **snapshot** (recall a preset slot on a beat), and **ping/pong**
 (relay mode) are in the spec. Rules: ignore unknown types and fields, drop messages with another major version,
 drop repeats of (`from`, `seq`), never re-broadcast.
 
