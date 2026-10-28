@@ -1,6 +1,7 @@
 // Three-tab independent-stop e2e (nc-clock 0.5.0). Instruments run this same harness in their own suites.
 //
 //   node test/e2e/three-tab.mjs [port]        # serves this repo, opens examples/three-tab/ in three tabs
+//   SKEW_MS=5 node test/e2e/three-tab.mjs     # negative control: B's real notes 5 ms late, the sync gate fails
 //   PLAYWRIGHT_CORE=/path/to/playwright-core/index.mjs  (default: import 'playwright-core')
 //
 // From another suite:
@@ -14,10 +15,17 @@
 // Tabs must share one BroadcastChannel (same origin and browser context), start on a constant tempo, and must
 // not change tempo during the run.
 //
-// Scenario: start A, B, C; stop B (A and C keep the grid); stop the leader (it hands off to a playing tab, anchor
-// unchanged, term up); restart B (it lands on the grid); stop the rest one by one (the session ends with the last).
+// Scenario: Play first in a tab that does not lead (it must start the session: review P1, Web Locks), then the
+// other two; stop B (A and C keep the grid); stop the leader (it hands off to a playing tab, anchor unchanged, term
+// up); restart B (it lands on the grid); stop the rest one by one (the session ends with the last); then Play in a
+// tab that does not lead again (a new session starts).
 // Timing: every onset against the session grid, and every beat two tabs both scheduled against each other, pooled:
-// p95 <= 1 ms and max <= 3 ms (the NC sync standard).
+// p95 <= 1 ms and max <= 3 ms (the NC sync standard). Onsets are real notes when a tab plays them through Web
+// Audio: the harness wraps OscillatorNode.prototype.start in every page and reads each note's context start time
+// while the page sets `window.__ncE2EBeat` to its beat (examples/three-tab/tab.js with ?audio does). That start time
+// is mapped to shared time with the page's own output timestamps (getOutputTimestamp, the median offset of its
+// notes within +-3 s), independently of the instrument's mapper. `audio: true` requires real notes; without any,
+// the harness falls back to the scheduled transport times (timing.source says which).
 
 const SYNC_P95_MS = 1, SYNC_MAX_MS = 3;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -28,9 +36,38 @@ function stats(values) {
   return { n: s.length, p95: s[Math.min(s.length - 1, Math.floor(s.length * 0.95))], max: s[s.length - 1] };
 }
 
-export async function runThreeTab({ browser, context = null, urls, settleMs = 1500, log = () => {} }) {
+/** In every page: each OscillatorNode.start the instrument tags with `window.__ncE2EBeat`, in context time. */
+function audioProbe() {
+  const w = window; w.__ncE2EAudio = [];
+  const start = OscillatorNode.prototype.start;
+  OscillatorNode.prototype.start = function (when = 0, ...rest) {
+    const beat = w.__ncE2EBeat;
+    if (typeof beat === 'number') {
+      try {
+        const c = this.context, ts = c.getOutputTimestamp?.();
+        const real = !!ts && ts.contextTime > 0.003; // Chrome's first stamps are placeholders
+        w.__ncE2EAudio.push({ beat, ctx: Math.max(when, c.currentTime), real,
+          off: performance.timeOrigin + (real ? ts.performanceTime - ts.contextTime * 1000 : performance.now() - c.currentTime * 1000) });
+      } catch { /* not measurable */ }
+    }
+    return start.call(this, when, ...rest);
+  };
+}
+const median = a => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+/** Shared time (s) of each real note: context start + the page's context->epoch offset (median within +-3 s). */
+function audioOnsets(raw) {
+  const real = raw.filter(o => o.real);
+  return raw.map(o => {
+    const near = real.filter(x => Math.abs(x.ctx - o.ctx) <= 3).map(x => x.off);
+    const off = near.length ? median(near) : o.off;
+    return { beat: o.beat, time: (o.ctx * 1000 + off) / 1000 };
+  });
+}
+
+export async function runThreeTab({ browser, context = null, urls, settleMs = 1500, audio = false, log = () => {} }) {
   if (!urls || urls.length !== 3) throw new Error('runThreeTab: three URLs');
   const ctx = context ?? await browser.newContext();
+  await ctx.addInitScript(audioProbe);
   const pages = [];
   const names = ['A', 'B', 'C'];
   const checks = [];
@@ -48,17 +85,27 @@ export async function runThreeTab({ browser, context = null, urls, settleMs = 15
     const tab = Object.fromEntries(names.map((n, i) => [n, pages[i]]));
     const call = (n, fn) => tab[n].evaluate(f => window.ncE2E[f](), fn);
     const states = async () => Object.fromEntries(await Promise.all(names.map(async n => [n, await call(n, 'state')])));
-    const onsets = {}; for (const n of names) onsets[n] = [];
-    const collect = async phase => { for (const n of names) for (const o of await call(n, 'takeOnsets')) onsets[n].push({ ...o, phase }); };
+    const onsets = {}, notes = {}; for (const n of names) { onsets[n] = []; notes[n] = []; }
+    const collect = async phase => {
+      for (const n of names) {
+        for (const o of await call(n, 'takeOnsets')) onsets[n].push({ ...o, phase });
+        notes[n].push(...await tab[n].evaluate(() => window.__ncE2EAudio.splice(0)));
+      }
+    };
     const leaderName = st => names.filter(n => st[n].leader);
 
     let st = await states();
     check(leaderName(st).length === 1, `one leader at start (${leaderName(st).join(',')})`);
 
-    // 1. Start A, B, C.
-    await call('A', 'play'); await sleep(600);
-    await call('B', 'play'); await sleep(300);
-    await call('C', 'play'); await sleep(settleMs); await collect('start');
+    // 1. Play first in a tab that does not lead: it starts the session (it used to sit at playing, not running,
+    //    forever with Web Locks: its own heartbeat moved the lead and the old leader dropped its start). Then the rest.
+    const first = names.find(n => !st[n].leader);
+    await call(first, 'play'); await sleep(settleMs); await collect('first');
+    st = await states();
+    check(st[first].playing && names.every(n => st[n].running), `Play in non-leading ${first} starts the session`);
+    check(onsets[first].some(o => o.phase === 'first') && names.every(n => n === first || !onsets[n].length), `only ${first} plays`);
+    for (const n of names.filter(n => n !== first)) { await call(n, 'play'); await sleep(300); }
+    await sleep(settleMs); await collect('start');
     st = await states();
     const ref = { anchor: st.A.anchor, tempo: st.A.tempo, startTime: st.A.startTime };
     check(names.every(n => st[n].playing && st[n].running), 'A, B and C play');
@@ -100,12 +147,28 @@ export async function runThreeTab({ browser, context = null, urls, settleMs = 15
     check(names.every(n => !st[n].running && !st[n].playing), 'last Stop ends the session everywhere');
     await collect('end');
 
+    // 6. After the end, Play in a tab that does not lead again: a new session (review P1, the ended-session path).
+    const again = names.find(n => !st[n].leader);
+    await call(again, 'play'); await sleep(settleMs);
+    st = await states();
+    const fresh = await call(again, 'takeOnsets');
+    await tab[again].evaluate(() => window.__ncE2EAudio.splice(0));
+    check(st[again].playing && names.every(n => st[n].running) && fresh.length > 0, `after the end, Play in non-leading ${again} starts a new session (${fresh.length} beats)`);
+    check(names.every(n => st[n].startTime === st[again].startTime) && st[again].startTime !== ref.startTime, 'one new run everywhere');
+    await call(again, 'stop'); await sleep(600);
+    st = await states();
+    check(names.every(n => !st[n].running), 'and it ends with its Stop');
+
     // Timing: onsets against the session grid, and the same beat across tabs.
     const bpm = ref.tempo[0].bpm, spb = 60 / bpm;
     const expected = beat => ref.anchor.time + (beat - ref.anchor.beat) * spb;
     const gridErr = [], crossErr = [];
     const byBeat = new Map();
-    for (const n of names) for (const o of onsets[n]) {
+    const real = Object.fromEntries(names.map(n => [n, audioOnsets(notes[n])]));
+    const source = names.some(n => real[n].length) ? 'audio' : 'transport';
+    if (audio || source === 'audio') check(names.every(n => real[n].length > 4), `real notes A ${real.A.length}, B ${real.B.length}, C ${real.C.length}`);
+    const timed = source === 'audio' ? real : onsets;
+    for (const n of names) for (const o of timed[n]) {
       gridErr.push((o.time - expected(o.beat)) * 1000);
       const list = byBeat.get(o.beat) ?? []; list.push(o.time); byBeat.set(o.beat, list);
     }
@@ -113,7 +176,7 @@ export async function runThreeTab({ browser, context = null, urls, settleMs = 15
     const pooled = stats([...gridErr, ...crossErr]);
     check(onsets.A.length > 4 && onsets.C.length > 4, `onsets A ${onsets.A.length}, B ${onsets.B.length}, C ${onsets.C.length}`);
     check(pooled.p95 <= SYNC_P95_MS && pooled.max <= SYNC_MAX_MS, `sync gate: pooled p95 ${pooled.p95.toFixed(4)} ms, max ${pooled.max.toFixed(4)} ms (n ${pooled.n})`);
-    const result = { ok: checks.every(c => c.ok), checks, timing: { grid: stats(gridErr), cross: stats(crossErr), pooled }, onsets: Object.fromEntries(names.map(n => [n, onsets[n].length])) };
+    const result = { ok: checks.every(c => c.ok), checks, timing: { source, grid: stats(gridErr), cross: stats(crossErr), pooled }, onsets: Object.fromEntries(names.map(n => [n, onsets[n].length])) };
     if (!result.ok) { const err = new Error(`three-tab e2e failed: ${checks.filter(c => !c.ok).map(c => c.what).join('; ')}`); err.result = result; throw err; }
     return result;
   } finally {
@@ -144,12 +207,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   await new Promise(r => server.listen(port, '127.0.0.1', r));
   const pwPath = process.env.PLAYWRIGHT_CORE;
   const pw = pwPath ? await import(pathToFileURL(pwPath).href) : await import('playwright-core');
-  const browser = await (pw.chromium ?? pw.default.chromium).launch();
-  const base = `http://127.0.0.1:${port}/examples/three-tab/?channel=nc-sync-e2e-${Date.now()}`;
-  const urls = [`${base}&app=A&id=a&swing=0.62`, `${base}&app=B&id=b`, `${base}&app=C&id=c`];
+  const browser = await (pw.chromium ?? pw.default.chromium).launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  const base = `http://127.0.0.1:${port}/examples/three-tab/?audio&channel=nc-sync-e2e-${Date.now()}`;
+  // SKEW_MS (negative control): B plays its real notes that late; the sync gate must fail.
+  const skew = process.env.SKEW_MS ? `&skewMs=${Number(process.env.SKEW_MS)}` : '';
+  const urls = [`${base}&app=A&id=a&swing=0.62`, `${base}&app=B&id=b${skew}`, `${base}&app=C&id=c`];
   let code = 0;
   try {
-    const result = await runThreeTab({ browser, urls, log: line => console.log(line) });
+    const result = await runThreeTab({ browser, urls, audio: true, log: line => console.log(line) });
     console.log(JSON.stringify({ ok: result.ok, timing: result.timing, onsets: result.onsets }));
   } catch (e) {
     console.error(e.message); if (e.result) console.log(JSON.stringify({ ok: false, timing: e.result.timing }));
