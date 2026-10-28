@@ -196,6 +196,9 @@ export class NcSyncPeer implements ClockAuthority {
     this.clock.setAuthority(null);
     this.peers.clear();
     this.lastSeq.clear();
+    // setLeader(false) above beats once; if that beat timed out a peer while another was still known, emitPeers
+    // restarted the timer (the channel was still open). Settle it now: no channel, so no timer.
+    this.syncHeartbeat();
   }
 
   /** Hear role changes. Returns an unsubscribe function. */

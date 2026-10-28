@@ -16,6 +16,9 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
   docs/nc-sync-v1.md: a peer MAY stop beating while alone (and SHOULD then beat once when shown again). Not a wire
   change: messages, fields and timeouts are unchanged, and peers on 0.3.0 and earlier interoperate. From ASTRID
   (NetComposer-Synth), whose idle perf gate allows at most one timer callback a second on an idle page.
+  `stop()` leaves no timer behind when its last heartbeat (sent as it gives up the lead) times out a stale peer
+  while another peer is still known (found by ASTRID's suite, which never exited; regression test in
+  test/heartbeat.test.ts).
 
 ### Added
 - `AudioClockMapper` treats a step that comes back within `stepRevertMs` (new option, default 200 ms of audio clock
