@@ -3,7 +3,86 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
+## [0.5.1] - Unreleased
+
+Stacked on 0.5.0 (#6).
+
+### Changed
+- `publishState()` on a follower forwards a swing edit (`heartbeat.swing`) only if that peer led the running session
+  (an ex-leader, playing or stopped). A follower that never led it (not joined, or playing) returns `false` and
+  sends nothing, so its own swing cannot replace the session swing. A leader is unchanged. From ASTRID-Rhythm
+  (swing-join:310, psemmelhack/ASTRID-Rhythm#32): an unjoined tab's swing edit replaced the session swing.
+- Receivers (the leader included) ignore a `heartbeat.swing` while no session runs, or from a peer they have not
+  seen lead the running session (send `state` while it ran). Who led resets when the session ends.
+- A leader with no `swing` option (ASTRID-like) sends the session swing it keeps (an ex-leader's edit, or carried
+  over a handoff), not 0. The spec now says so: `state.swing` is `0` only when the leader has no session swing.
+
+## [0.5.0] - Unreleased
+
+Independent stop. Released after 0.4.0 (#4, snapshot `cancel`; #5, heartbeat only while another peer is known),
+in merge order. This branch carries #5's commits (cherry-picked), so the [Unreleased] changes below are in it too;
+merge #5 first.
+
+### Added
+- Per-instrument Stop, opt-in: `new NcSyncPeer({ …, independentStop: true })`. Stop in one tab stops only that
+  instrument; the session grid runs on for the others with no beat jump, and the session ends only when the last
+  instrument stops. Play while others play is a Join on the running grid (tempo map, meter and swing included) and
+  never restarts it. If the leader stops while others play, the lead hands off to a playing tab: the snapshot is
+  sent unchanged (same anchor, tempo map, start time) with the term incremented, and the session swing is carried
+  until the new leader's app publishes its own. `clock.stop({ at, all: true })` stays the explicit stop-all
+  (`state.stopAll` and `state.endSession`). From the netcomposer.art P1 (Stop in any tab stopped every tab).
+- `NcClock`: `playing` (this instrument), `isPlayingAt(t)`, `joinPoint(t, gridBeats?)`, `commitMember(playing, at)`,
+  and the `{ kind: 'member', playing, at }` change. `ClockAuthority.independentStop` (optional).
+- NC Sync v1 (still `nc-sync/1`): the `independentStop` capability; `playing` in `hello` and `heartbeat`;
+  `state.independentStop` and `state.endSession`; a playing-first leader ranking when every peer that can lead has
+  the capability. See docs/nc-sync-v1.md, "Member play state".
+- `test/e2e/three-tab.mjs` and `examples/three-tab/`: a three-tab e2e (Play first in a tab that does not lead; start
+  the rest; stop B; stop the leader; restart B; stop the rest; Play in a non-leading tab again after the end) against
+  the sync standard, driven through a small `window.ncE2E` hook instruments can implement to run it in their own
+  suites. Timing comes from real Web Audio notes when the tab plays them (`?audio`: the harness reads each
+  `OscillatorNode.start` and maps it with the page's own output timestamps), else from the scheduled times.
+  `npm run e2e` (needs `playwright-core`; set `PLAYWRIGHT_CORE`); `SKEW_MS=4` is the negative control. Runs in CI.
+
+### Fixed (review of #6 @338b291)
+- With Web Locks, Play in a tab that did not lead, with no session running, left it playing on a stopped session
+  forever: its own heartbeat moved the lead (playing outranked stopped) while its start request went to the old
+  leader, which released the lock and dropped it. Playing now ranks only while the session runs, and a new leader
+  whose instrument plays on a stopped or ending session starts (or keeps) the run.
+- A tab that joined just as the last instrument stopped no longer depends on its start request: the leader keeps the
+  run on its playing heartbeat (no old-grid notes, then a restart, when the request is late or lost).
+- `stop()` no longer re-elects the leaving tab (its last beat could time out a peer and re-run the election).
+- Swing edits from a tab that does not lead (Petra, on d5d7b86): a follower's Play moves the lead to it, so the
+  stopped ex-leader's later swing edit went nowhere. `publishState()` on a follower now sends its swing to the leader
+  as a session edit (an optional `swing` field on `heartbeat`, no new message type), and the leader applies and
+  broadcasts it. Every peer keeps a pending edit until a `state` carries it (or a `state` sent more than 0.25 s
+  later), so a new leader applies it when the lead moves before the old leader did. Apps that only called
+  `publishState()` while leading must call it on every swing edit. Tempo already went to the leader (`tempo`).
+- Size: the peer was trimmed (shared rank function, listener helpers, no duplicate timer and lock code) so the
+  0.5.0 fixes cost almost nothing over 9083844 (min+gz of the bundle 8,792 B there, 8,813 B at 4901c59; 8,748 B once the mixed-session
+  fallback was removed).
+
+### Compatibility
+- Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.4.0 and earlier.
+- No mixed sessions (Peter: no compatibility work, every instrument ships together from one domain): every peer
+  in an `independentStop` session must have it. The 0.4.0 fallback (any Stop stops everyone while a peer without the
+  capability is known, plain ranking) was removed with its tests and the e2e's `?legacy` step.
+
 ## [Unreleased]
+
+### Changed (planned for 0.4.0)
+- `NcSyncPeer` runs its heartbeat timer only while it knows another peer: it starts when one appears (its `hello`
+  or `heartbeat`) and stops when the last one leaves (`bye`) or times out, and on `stop()`. Alone, an idle page no
+  longer wakes every `heartbeatMs`. A newcomer still learns about everyone at once, because every peer answers
+  `hello` with a heartbeat; taking or losing the lead still announces the role with one heartbeat. New read-only
+  getter `beating` (diagnostics and tests). A peer also sends one heartbeat when its page is shown again
+  (`visibilitychange` to visible, `pageshow`), so a lone tab that missed a newcomer's `hello` while frozen still
+  meets it; skipped without `document`/`window` (Node, workers), and the listeners go on `stop()`.
+  docs/nc-sync-v1.md: a peer MAY stop beating while alone (and SHOULD then beat once when shown again). Not a wire
+  change: messages, fields and timeouts are unchanged, and peers on 0.3.0 and earlier interoperate. From ASTRID
+  (NetComposer-Synth), whose idle perf gate allows at most one timer callback a second on an idle page.
+  `stop()` leaves no timer behind when its last heartbeat (sent as it gives up the lead) times out a stale peer
+  while another peer is still known (found by ASTRID's suite, which never exited; regression test in
+  test/heartbeat.test.ts).
 
 ### Added
 - `AudioClockMapper` treats a step that comes back within `stepRevertMs` (new option, default 200 ms of audio clock
@@ -132,7 +211,7 @@ Session swing over NC Sync, based on a contributed patch.
 - `NcSyncPeer` option `swing: () => number | null`: the leader writes its swing into `state` (clamped to
   0.5–0.75; `null` sends 0, "unset").
 - `peer.swing` (the session swing, or null until a leader sets one), `peer.onSwing(fn)` (fires on change only, never
-  for unset), and `peer.publishState()` (leader resends `state`; returns false on a follower).
+  for unset), and `peer.publishState()` (leader resends `state`; returns false on a follower; 0.5.0 forwards it).
 - `readSwing()`, `SWING_UNSET`, `SWING_STRAIGHT`, `SWING_MAX` in the protocol module.
 - Spec (docs/nc-sync-v1.md §3): what `state.swing` means (position of the second 16th in each pair, 0.5 straight
   to 0.75), that `0` is unset, that receivers ignore out-of-range values, and that a leader may resend `state`.

@@ -43,6 +43,12 @@ export interface Capabilities {
   sampleAccurate: boolean;
   /** Optional free-form modes the peer syncs in (e.g. `["generator", "arp"]`). */
   modes?: string[];
+  /**
+   * Stop is per instrument (nc-clock 0.5.0, `NcSyncPeer({ independentStop: true })`): the peer sends its own
+   * `playing` in `hello` and `heartbeat`, its Stop stops only itself, and the session (the shared transport) ends
+   * when the last instrument stops. Absent means false: every Stop is a session stop.
+   */
+  independentStop?: boolean;
 }
 
 /** Fields on every message. */
@@ -62,18 +68,31 @@ export interface Envelope {
 }
 
 /** Join announcement. The leader answers with `state`. */
-export interface HelloMessage extends Envelope { type: 'hello'; app: string; version: string; capabilities: Capabilities; audio: AudioReadiness; outputLatencyMs: number | null; joinedAt: number }
+export interface HelloMessage extends Envelope { type: 'hello'; app: string; version: string; capabilities: Capabilities; audio: AudioReadiness; outputLatencyMs: number | null; joinedAt: number;
+  /** `independentStop` peers only: this instrument is playing (its own state, not the transport's). */
+  playing?: boolean }
 /** Leaving (best effort; liveness also comes from heartbeats and the leader lock). */
 export interface ByeMessage extends Envelope { type: 'bye' }
 /** About once a second. `hidden` peers may beat as rarely as once a minute (browser throttling). */
-export interface HeartbeatMessage extends Envelope { type: 'heartbeat'; app: string; leader: boolean; audio: AudioReadiness; hidden: boolean; outputLatencyMs: number | null; joinedAt: number; capabilities: Capabilities }
+export interface HeartbeatMessage extends Envelope { type: 'heartbeat'; app: string; leader: boolean; audio: AudioReadiness; hidden: boolean; outputLatencyMs: number | null; joinedAt: number; capabilities: Capabilities;
+  /** `independentStop` peers only: this instrument is playing. Sent at once when it changes, not only every second. */
+  playing?: boolean;
+  /** A session swing edit from a peer that led the running session and no longer leads (`publishState()`): the
+   *  leader applies it, and every peer keeps it until a `state` carries it, so a new leader applies it if the lead
+   *  moved first. Ignored from a peer that did not lead the running session. */
+  swing?: number }
 /** Leader only: the full clock. Followers apply it as is. */
 export interface StateMessage extends Envelope {
   type: 'state'; clock: ClockSnapshot;
   /** Where the second 16th of each 8th-note pair lands, as a fraction of the pair: 0.5 straight to 0.75 dotted.
-   * 0 means the leader does not set swing (what nc-clock 0.1.0 always sent). See {@link readSwing}. */
+   * The leader's own, or the session swing it keeps; 0 when it has none. See {@link readSwing}. */
   swing: number;
   leaderApp: string; stopAll?: boolean;
+  /** Set by an `independentStop` leader: a plain transport stop here is a session end after the last instrument
+   * stopped, so receivers keep their own play state. */
+  independentStop?: boolean;
+  /** With a stop: every instrument stops (a `stop` request, or `all`). Only `independentStop` leaders send it. */
+  endSession?: boolean;
 }
 /** Request (to the leader) to start or stop. */
 export interface TransportMessage extends Envelope { type: 'transport'; action: 'start' | 'stop'; atBeat?: number; all?: boolean }
@@ -98,7 +117,7 @@ export const MESSAGE_TYPES = ['hello', 'bye', 'heartbeat', 'state', 'transport',
 /** Body of a message: everything except the envelope. */
 export type MessageBody<M extends NcSyncMessage> = Omit<M, keyof Envelope> & { type: M['type'] };
 
-/** `state.swing` value meaning "this leader does not set swing" (nc-clock 0.1.0 always sent it). */
+/** `state.swing` value meaning "this leader has no session swing" (its app sets none and it keeps none). */
 export const SWING_UNSET = 0;
 /** `state.swing` for straight 16ths. */
 export const SWING_STRAIGHT = 0.5;
@@ -107,7 +126,7 @@ export const SWING_MAX = 0.75;
 
 /** A usable `state.swing` (0.5 to 0.75), or null when it is unset, out of range or not a number. */
 export function readSwing(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= SWING_STRAIGHT && value <= SWING_MAX ? value : null;
+  return typeof value === 'number' && value >= SWING_STRAIGHT && value <= SWING_MAX ? value : null;
 }
 
 /** Default capabilities: a main-thread follower with no ramps, swing or meter. */

@@ -1,6 +1,6 @@
 {
   "name": "@netcomposer/nc-clock",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "A universal, dependency-free beat clock and the NC Sync v1 protocol, so browser music apps can play in time together.",
   "license": "MIT",
   "author": {
@@ -47,6 +47,7 @@
     "dist",
     "src",
     "docs",
+    "test/e2e",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -58,7 +59,8 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json --noEmit",
     "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js",
     "example": "npm run build && node examples/serve.mjs",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "e2e": "node test/e2e/three-tab.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

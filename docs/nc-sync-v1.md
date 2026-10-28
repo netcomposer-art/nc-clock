@@ -51,9 +51,16 @@ newcomer learns who is present.
 | `audio` | AudioReadiness | `"running"`, `"suspended"`, `"interrupted"`, `"needs-gesture"` or `"none"`. |
 | `outputLatencyMs` | number or null | Output latency the peer measured. |
 | `joinedAt` | number | Shared time the peer joined. |
+| `playing` | boolean, optional | This instrument plays (only with the `independentStop` capability; see [Member play state](#member-play-state-independentstop)). |
 
 ### heartbeat
-Every ~1 s: `app`, `leader` (bool), `audio`, `hidden` (bool), `outputLatencyMs`, `joinedAt`, `capabilities`.
+Every ~1 s: `app`, `leader` (bool), `audio`, `hidden` (bool), `outputLatencyMs`, `joinedAt`, `capabilities`, and
+`playing` (bool) with `independentStop`. A peer with `independentStop` also sends a heartbeat at once when its
+`playing` changes.
+A peer that led the running session and no longer leads MAY add `swing` (number) to send a session swing edit to the leader; see [Swing](#swing).
+A peer that knows no other peer MAY stop beating while alone, until one appears (nobody is listening; every peer
+still answers a `hello` with a heartbeat, so a newcomer learns who is there). Such a peer SHOULD send one heartbeat
+when its page is shown again (it may have missed a `hello` while frozen in the background).
 Hidden tabs are throttled by browsers, so a peer with `hidden: true` MAY beat as rarely as once a minute. Peers
 SHOULD consider a visible peer gone after 3 s of silence, and a hidden one after 65 s.
 
@@ -66,9 +73,11 @@ The whole clock. Followers MUST apply it as is.
 | Field | Type | |
 |---|---|---|
 | `clock` | ClockSnapshot | Section 5. |
-| `swing` | number | Session swing, or `0` for unset. See [Swing](#swing). |
+| `swing` | number | Session swing (the leader's own, or the one it keeps), or `0` when it has none. See [Swing](#swing). |
 | `leaderApp` | string | Leader's app name. |
 | `stopAll` | boolean, optional | With a stop: also stop free-running arps/sequences (see `transport`). |
+| `independentStop` | boolean, optional | The leader runs per-instrument Stop ([Member play state](#member-play-state-independentstop)). |
+| `endSession` | boolean, optional | With a stop from an `independentStop` leader: every instrument stops (an explicit stop-all, or a `stop` request). |
 
 The leader MUST send `state` after every decision, in reply to every `hello`, and when it becomes leader. A
 `state` reply to `hello` carries the current anchor and play state, so a late joiner can start mid-bar on the next
@@ -83,14 +92,24 @@ answer one with a message.
 is triplet feel, `0.75` (the maximum in v1) is dotted. It applies to 16ths counted from the anchor's beat grid;
 peers with the `swing` capability play it, others ignore it.
 
-- `0` means "this leader does not set swing". nc-clock 0.1.0 always sent `0`, so old leaders stay compatible.
+- `0` means "this leader has no session swing": its app sets none and it keeps none. A leader whose app sets no
+  swing still sends the session swing it keeps (from an edit, or carried over a handoff), never `0` over it.
 - A receiver MUST ignore any value outside 0.5–0.75 (including `0`, non-numbers and NaN) and keep the swing it
   had. It MUST still apply the rest of the `state`.
-- A leader SHOULD send its current swing in every `state` and SHOULD send `state` promptly when swing changes.
+- A leader SHOULD send the session swing (its own, or the one it keeps) in every `state` and SHOULD send `state`
+  promptly when swing changes.
   It MUST clamp its own value to 0.5–0.75, or send `0`.
 - Swing is not part of the clock snapshot (section 5): the snapshot says when beats happen; swing is how a
   pattern sits on them. Adding it later would be a minor snapshot version (1.x), which v1 readers accept.
-- A follower's local swing edit stays local until the leader's next `state` (v1 has no swing request message).
+- A peer that does not lead MAY send a swing edit as `heartbeat.swing` (0.5–0.75), but only if it led the running
+  session (an ex-leader, playing or stopped); a peer that has not led it (not joined, or a follower that never led,
+  even while it plays) MUST NOT send one: its own swing stays local, so it cannot replace the session swing.
+  Receivers MUST ignore one while no session runs, or from a peer they have not seen lead the running session (it
+  sent a `state` while that session ran). Who led resets when the session ends: a `state` with the transport not
+  running clears it, so a leader of an earlier session does not edit the next one. The leader SHOULD apply it and
+  send `state` with it. Every peer SHOULD keep the latest such edit until a `state` carries that value (or a
+  `state` sent more than 0.25 s after the edit), and a new leader SHOULD send a kept edit, so an edit made during a
+  handoff is not lost.
 
 Followers MUST ignore `state` with a `term` lower than the highest term they have seen.
 
@@ -101,6 +120,35 @@ Followers MUST ignore `state` with a `term` lower than the highest term they hav
 - **Start** while playing (restart): on the next bar line, from beat 0.
 - **Stop**: at `now + 0.1 s`. Stop ends the *transport* only; instruments MAY keep free-running arps or latched
   sequences going, unless `all: true` (then `state.stopAll` is true and they stop everything).
+
+With `independentStop` (below), a peer sends `start` only when no session runs, and `stop` only with `all: true`;
+its plain Stop and its Play while a session runs are member changes, not requests. An `independentStop` leader
+treats a `start` while running as a Join (it MUST NOT restart the grid), and a `stop` from any peer as a stop of
+the whole session (`endSession: true`).
+
+#### Member play state (`independentStop`)
+Each instrument stops on its own; the session grid (the clock snapshot) is separate from who plays on it.
+
+- A peer with the `independentStop` capability sends `playing` in `hello` and `heartbeat`. Stop in that peer stops
+  only that instrument: it sets `playing: false` locally and beats once, and the grid runs on unchanged. Play while
+  a session runs is a **Join**: the instrument starts on the next grid line it chooses (nc-clock: the next whole
+  beat, `NcClock.joinPoint`), with the session's tempo map, meter and swing. The grid is never restarted.
+- The leader ends the session (a normal stop, `state.independentStop: true`) only when no member plays: its own
+  instrument stopped and every `independentStop` peer reports `playing: false`. A peer without the capability
+  counts as playing while the session runs; a peer that times out or says `bye` counts as stopped.
+- `state` with `playing: false` and `endSession`, `stopAll`, or no `independentStop` (an old leader) stops every
+  instrument. Without those flags it ends an idle session; an instrument that is still playing (a Join crossed the
+  stop) sends `start`, and the leader keeps the run if its stop has not landed yet (else starts a new one). The
+  leader SHOULD also keep a run whose idle stop is still pending as soon as a member's `heartbeat` says it plays, so
+  the Join never depends on that `start` arriving in time.
+- **Handoff.** When every peer that can lead has `independentStop`, the leader ranking puts playing peers first
+  while the session runs (section 6). With no session running, play state does not rank: a Play there is a `start`
+  for the current leader, and moving the lead at that moment could lose it. A new leader whose own instrument plays
+  while no session runs (or one is ending) starts or keeps the run itself. A leader that stops while others play hands the lead to a playing peer; the new leader sends the
+  snapshot unchanged (same anchor, tempo map, meter, start time) with a higher `term`, and keeps the session's
+  swing until its app publishes its own. A beat is at the same time before and after the handoff.
+- **No mixed sessions.** Every peer in a session MUST have `independentStop`; there is no fallback for a peer
+  without it.
 
 ### tempo (request)
 `bpm`; optional `atBeat`; optional `rampBeats`.
@@ -136,6 +184,7 @@ Reserved for a future version. Receivers MUST ignore it in v1.
 | `canLead` | bool | Can lead at all. |
 | `sampleAccurate` | bool | Schedules on the audio thread. |
 | `modes` | string[], optional | Free-form modes in which it follows the transport. |
+| `independentStop` | bool, optional | Stop stops only this instrument; it sends `playing` ([Member play state](#member-play-state-independentstop)). Absent means `false`. |
 
 Defaults: `{"tempoRange":[20,300],"tempoRamps":false,"swing":false,"meter":false,"prefersLeader":false,"canLead":true,"sampleAccurate":false}`.
 
@@ -164,7 +213,9 @@ Defaults: `{"tempoRange":[20,300],"tempoRamps":false,"swing":false,"meter":false
 - **With Web Locks** (browsers): peers that can lead request the lock `"nc-sync-leader"`; the holder leads. A holder
   without `prefersLeader` that sees a `prefersLeader` peer yields (releases the lock and withdraws).
 - **Without locks**: the leader is the eligible peer ranked first by `prefersLeader`, then oldest `joinedAt`, then
-  lowest `from`. A newcomer SHOULD listen for a short grace period (nc-clock: 300 ms) before claiming the lead, so it
+  lowest `from`. When every peer that can lead has `independentStop` and the session runs, a playing peer ranks
+  before a stopped one (then `prefersLeader`, `joinedAt`, `from`); with locks, a stopped holder yields to a playing peer, and a holder
+  without `prefersLeader` yields to a playing one with it. A newcomer SHOULD listen for a short grace period (nc-clock: 300 ms) before claiming the lead, so it
   never competes with a leader that is already running.
 - On becoming leader a peer increments `term` past any it has seen and broadcasts `state`. The anchor carries over,
   so a leader change does not move the beat.
