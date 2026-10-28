@@ -105,7 +105,8 @@ createTicker(() => {
 ```
 
 That is the whole integration. A runnable version is in [examples/metronome](examples/metronome): open it in two
-tabs and they click together.
+tabs and they click together. If you queue notes far ahead, see `examples/metronome/retime-drift.js`: it keeps
+queued notes on the current mapping while the audio clock drifts.
 
 ```bash
 npm install && npm run example     # then open http://localhost:8080/examples/metronome/ in two tabs
