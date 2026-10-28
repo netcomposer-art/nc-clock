@@ -108,3 +108,34 @@ test('clock steps: events scheduled before a 10 ms step land on the grid after r
   // Snapshot schedulers (no queue, the worklet maps every block): new times are exact at once.
   assert.ok(near((m.toContextTime(beatAt(t0, 9)) - m.offset - beatAt(t0, 9)) * 1000, 0));
 });
+
+test('first reading: placeholder output timestamps right after start are not used; ready waits for a real one', () => {
+  // Chrome, the first output callbacks after the context starts (probed in headless Chrome): contextTime stays
+  // ~0.00002–0.00005 s while performanceTime runs on, so these read ~20 then ~10 ms late. Seen in ASTRID two-tab
+  // runs as a +20 ms (or +10 ms) first note on join.
+  const d = device();
+  const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
+  const truth = () => d.currentTime - (ORIGIN + d.perf) / 1000;
+  d.getOutputTimestamp = () => ({ contextTime: 0.00002, performanceTime: d.perf });
+  assert.equal(m.ready, false, 'placeholder: not ready');
+  d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: 0.00005, performanceTime: d.perf });
+  assert.equal(m.ready, false, 'a moving placeholder: still not ready');
+  d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: d.currentTime, performanceTime: d.perf });
+  assert.equal(m.ready, false, 'one real stamp: not yet (median of three)');
+  assert.equal(m.ready, false, 'the same stamp again adds nothing');
+  d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: d.currentTime + 0.002, performanceTime: d.perf }); // a 2 ms jittery one
+  assert.equal(m.ready, false);
+  d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: d.currentTime, performanceTime: d.perf });
+  assert.equal(m.ready, true, 'three real stamps: ready');
+  assert.ok(Math.abs((m.offset - truth()) * 1000) < 1e-3, `offset off by ${(m.offset - truth()) * 1000} ms`);
+});
+
+test('first reading: a timestamp that never gets real falls back to currentTime − latency after 500 ms', () => {
+  const d = device();
+  d.getOutputTimestamp = () => ({ contextTime: 0, performanceTime: 0 });
+  const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
+  assert.equal(m.ready, false);
+  d.perf += 400; assert.equal(m.ready, false);
+  d.perf += 200; m.sample(); m.sample(); assert.equal(m.ready, true);
+  assert.ok(Math.abs(m.offset - (d.currentTime - (ORIGIN + d.perf) / 1000)) < 1e-9);
+});

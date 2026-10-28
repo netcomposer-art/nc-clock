@@ -65,6 +65,16 @@ sequencer), in Node, or ported to another language.
 
 The metronome in `examples/metronome` does exactly this in about 100 lines.
 
+## The first reading
+
+Right after an AudioContext starts, Chrome's `getOutputTimestamp()` gives placeholders for the first two or three
+output callbacks: `contextTime` stays at ~0.00002–0.00005 s while `performanceTime` already runs, so they read
+~20 ms, then ~10 ms late. A note scheduled from one stays that late. `AudioClockMapper` ignores stamps with
+`contextTime` below 3 ms, and `mapper.ready` turns true only after three samples from distinct real stamps
+(single stamps jitter by up to ~2 ms under load). **Wait for `ready` before the first scheduling**: until then
+`offset` is only a guess. If a browser with the timestamp API gives nothing real for 500 ms, the mapper falls back
+to `currentTime − outputLatency`, as it does where the API is missing.
+
 ## Device clock steps
 
 A dropped or repeated output buffer moves the AudioContext clock against wall time by a whole buffer

@@ -14,6 +14,14 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 - docs/nc-clock.md: "Device clock steps". Approach and constants from OLIVE Bass `clock-link` (Olive); patch by
   Petra (ASTRID Rhythm). Not a wire change.
 
+### Fixed
+- A follower's first note on join was sometimes 10–20 ms late. Right after a context starts, Chrome's
+  `getOutputTimestamp()` gives placeholders (`contextTime` ~0.00002 s while `performanceTime` runs on, reading ~20
+  then ~10 ms late), and a fresh `AudioClockMapper` took the first one as its offset. Stamps with `contextTime`
+  below 3 ms are now ignored, `ready` needs three samples from distinct real stamps, and with the timestamp API but
+  nothing real for 500 ms the mapper falls back to `currentTime − outputLatency`. From ASTRID (Astrid,
+  NetComposer-Synth PR #47).
+
 ## [0.2.0] - 2026-10-27
 
 Session swing over NC Sync, based on a contributed patch.
