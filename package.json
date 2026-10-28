@@ -1,6 +1,6 @@
 {
   "name": "@netcomposer/nc-clock",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A universal, dependency-free beat clock and the NC Sync v1 protocol, so browser music apps can play in time together.",
   "license": "MIT",
   "author": {

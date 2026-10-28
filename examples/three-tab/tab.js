@@ -8,7 +8,7 @@ const app = q.get('app') ?? 'tab';
 const clock = new NcClock({ bpm: 120, timebase: 'shared' });
 const swing = q.has('swing') ? Number(q.get('swing')) : null;
 const peer = new NcSyncPeer({
-  app, version: '0.4.0', clock, channel: q.get('channel') ?? 'nc-sync-e2e', instanceId: q.get('id') ?? undefined,
+  app, version: '0.5.0', clock, channel: q.get('channel') ?? 'nc-sync-e2e', instanceId: q.get('id') ?? undefined,
   independentStop: true, capabilities: { prefersLeader: q.has('prefersLeader'), swing: swing !== null },
   ...(swing !== null ? { swing: () => swing } : {}),
 });
