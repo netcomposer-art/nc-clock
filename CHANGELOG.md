@@ -6,6 +6,13 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 ## [Unreleased]
 
 ### Added
+- NC Sync `snapshot` op `"cancel"`: withdraws the sender's own pending (held, not yet taken) `recall`, so followers
+  don't switch on the bar line after the leader's Load or New dropped the queued slot. Optional `recallSeq` names the
+  recall, so a stale cancel can't withdraw a newer one; `slot` is the recall's slot or `ANY_SLOT` (`-1`). A cancel
+  after the recall was taken is a no-op. `NcSyncPeer.sendCancel({ slot?, recallSeq? })`; `sendSnapshot` now returns
+  the `seq` it sent (was `void`); `cancelsRecall(cancel, recall)` is the matching rule; `ANY_SLOT`, `SNAPSHOT_OPS`.
+  Backward compatible: 0.3.0 and older receivers drop a snapshot with an unknown op (and still switch, as before).
+  Spec: docs/nc-sync-v1.md, section 3, "cancel". From Rhythm's queued-slot audit (Petra; Bass #7, Olive).
 - `AudioClockMapper` treats a step that comes back within `stepRevertMs` (new option, default 200 ms of audio clock
   time, `0` = off) as a transient: the confirmed step is still applied at once (~20 ms confirmation unchanged),
   but provisionally; when the readings return to the pre-step anchor inside the window, that anchor is restored

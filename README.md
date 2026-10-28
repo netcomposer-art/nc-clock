@@ -141,7 +141,7 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 | `retimeForStep(when, step, renderedUntil)` | Moves a queued context-time event by a confirmed step if it is not yet rendered. |
 | `createTicker(onTick, { intervalMs?, worker? })` | A ~20 ms tick from a Worker timer (not throttled in hidden tabs) plus a main-thread fallback, de-duplicated. `start()`, `stop()`, `dispose()`, `kind`. |
 | `sharedNow()` | Shared time: `(performance.timeOrigin + performance.now()) / 1000`. |
-| `new NcSyncPeer({ app, version, clock, capabilities?, channel?, locks?, … })` | An NC Sync v1 participant. `start()`, `stop()`, `isLeader`, `peers`, `onRole(fn)`, `onPeers(fn)`, `onSnapshot(fn)`, `onMessage(fn)`, `sendSnapshot(op, slot, extra?)`, `tempoRange()`. Swing: pass `swing: () => value` (0.5 straight to 0.75) to send yours while leading; read the session's with `swing` (null until a leader sets one) and `onSwing(fn)`; call `publishState()` after a swing edit (leader only; returns false on a follower). |
+| `new NcSyncPeer({ app, version, clock, capabilities?, channel?, locks?, … })` | An NC Sync v1 participant. `start()`, `stop()`, `isLeader`, `peers`, `onRole(fn)`, `onPeers(fn)`, `onSnapshot(fn)`, `onMessage(fn)`, `sendSnapshot(op, slot, extra?)` (returns the message `seq`), `sendCancel({ slot?, recallSeq? })` (withdraw this peer's pending recall, e.g. on Load or New), `tempoRange()`. Swing: pass `swing: () => value` (0.5 straight to 0.75) to send yours while leading; read the session's with `swing` (null until a leader sets one) and `onSwing(fn)`; call `publishState()` after a swing edit (leader only; returns false on a follower). |
 
 ### Protocol
 
@@ -193,7 +193,7 @@ Every message carries the envelope:
 { "proto": "nc-sync/1", "type": "tempo", "from": "3f2a…", "term": 4, "seq": 11, "sentAt": 1761580811.4, "bpm": 96 }
 ```
 
-**heartbeat** (about every second), **bye**, **snapshot** (recall a preset slot on a beat), and **ping/pong**
+**heartbeat** (about every second), **bye**, **snapshot** (recall a preset slot on a beat, or `cancel` a pending recall), and **ping/pong**
 (relay mode) are in the spec. Rules: ignore unknown types and fields, drop messages with another major version,
 drop repeats of (`from`, `seq`), never re-broadcast.
 

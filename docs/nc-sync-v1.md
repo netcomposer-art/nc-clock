@@ -113,10 +113,39 @@ Preset slots, for apps that have them.
 
 | Field | | |
 |---|---|---|
-| `op` | `"recall"`, `"stopSequence"`, `"store"` | `recall` is idempotent (never toggles). `store` is opt-in per app (it overwrites the user's slot); apps MAY ignore it. |
-| `slot` | integer | Slot number. |
+| `op` | `"recall"`, `"stopSequence"`, `"store"`, `"cancel"` | `recall` is idempotent (never toggles). `store` is opt-in per app (it overwrites the user's slot); apps MAY ignore it. `cancel`: see below. |
+| `slot` | integer | Slot number. On `cancel`: the slot of the recall being withdrawn, or `-1` for any slot. |
 | `atBeat` | number, optional | Beat it takes effect. |
 | `glide` | `{ beats?, seconds? }`, optional | Morph time; the sender's glide wins. |
+| `recallSeq` | integer, optional | `cancel` only: the `seq` of the sender's `recall` being withdrawn. |
+
+A `recall` with an `atBeat` still ahead is **pending**: a receiver holds it until that beat, then takes it (switches).
+A newer pending `recall` from the same sender replaces the held one.
+
+#### cancel
+`op: "cancel"` withdraws the sender's own pending `recall`. A sender SHOULD send it whenever it drops a recall it
+already sent before its beat came round (for example on Load or New, which replace the pattern the recall was
+queued against), so receivers don't switch on the bar line.
+
+A receiver holding a pending `recall` R MUST drop it, without switching, when it receives a `cancel` C where:
+- C and R have the same `from` (a cancel never withdraws another peer's recall);
+- C's `seq` is greater than R's (it was sent after R; channels are ordered and `seq` dedupe drops anything older);
+- C's `slot` is `-1` or R's `slot`; and
+- C has no `recallSeq`, or C's `recallSeq` is at least R's `seq`.
+
+Races and edge cases:
+- **Stale cancel.** A sender that names the recall it means (`recallSeq`) can't withdraw a newer recall: if R was
+  replaced by a later recall R′, a cancel naming R leaves R′ held. Senders SHOULD set `recallSeq`.
+- **Late cancel.** A cancel that arrives after R's beat has come round (R was already taken) is a no-op: there is
+  nothing pending to drop. Receivers MUST NOT switch back.
+- **Nothing held.** A cancel that matches nothing is a no-op. A later `recall` from the same sender is held as usual.
+- **Same task.** A `recall` and its `cancel` sent back to back are delivered in `seq` order, so the cancel wins.
+- **Older receivers.** Receivers that predate `cancel` (nc-clock 0.3.0 and older) drop a `snapshot` with an
+  unknown `op`, so sending it is safe; those receivers still switch on the bar line, as before. Receivers MUST
+  drop a `snapshot` whose `op` they don't know.
+
+nc-clock: `peer.sendCancel({ slot?, recallSeq? })` sends it (`sendSnapshot` returns the `seq` to name), and
+`cancelsRecall(cancel, recall)` implements the rule above.
 
 ### ping / pong (relay mode only)
 `ping { id }`, answered by `pong { id, receivedAt }`, for estimating clock offset over a network relay.
