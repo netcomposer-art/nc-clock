@@ -428,3 +428,56 @@ for (const locks of [false, true]) {
     b.peer.stop();
   });
 }
+
+// ---- Petra on d5d7b86: session swing edits must not depend on who leads ----------------------------------------
+// A follower's Play moves the lead to it (playing first); the stopped ex-leader's later swing edit used to go nowhere
+// (only the leader publishes swing). publishState() on a follower now sends the edit to the leader (in a heartbeat).
+for (const locks of [false, true]) {
+  const sfx = locks ? ' (Web Locks)' : '';
+  test(`a stopped ex-leader's swing edit reaches every peer${sfx}`, async () => {
+    const now = { t: 11_000 };
+    let swingA = 0.62;
+    const { a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null, swingA: () => swingA });
+    a.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; b.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; a.clock.stop({ at: now.t }); await flush(80);
+    assert.deepEqual(leaderOf(a, b, c), ['b-bass'], 'the lead moved to the playing tab');
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.62);
+    swingA = 0.55;
+    assert.equal(a.peer.publishState(), true, 'a follower forwards its edit');
+    await flush(60);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.55, `${t.peer.id} has the edit`);
+    // The edit is the session swing from then on, also after the next handoff.
+    now.t += 1; a.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; b.clock.stop({ at: now.t }); await flush(80);
+    assert.equal(leaderOf(a, b, c).length, 1);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.55, `${t.peer.id} after the next handoff`);
+    for (const t of [a, b, c]) t.peer.stop();
+  });
+
+  test(`a swing edit during a handoff is not lost${sfx}`, async () => {
+    const now = { t: 11_500 };
+    let swingC = 0.5;
+    const h = hub();
+    const L = locks ? fakeLocks() : null;
+    const a = tab(h, 'a-rhythm', now, { locks: L, swing: () => 0.62 }); await a.peer.start(); await flush();
+    now.t += 1;
+    const b = tab(h, 'b-bass', now, { locks: L }); await b.peer.start(); await flush();
+    now.t += 1;
+    const c = tab(h, 'c-synth', now, { locks: L, swing: () => swingC }); await c.peer.start(); await flush(60);
+    a.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; b.clock.play({ at: now.t }); await flush(60);
+    // A stops (the lead moves to B) while C edits swing: the edit crosses the handoff (it may reach A as it leaves).
+    now.t += 0.5; swingC = 0.7;
+    a.clock.stop({ at: now.t }); c.peer.publishState(); await flush(80);
+    assert.deepEqual(leaderOf(a, b, c), ['b-bass']);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.7, `${t.peer.id}: the edit landed`);
+    // And the other order: the edit first, the handoff on the same tick.
+    now.t += 1; a.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; swingC = 0.58;
+    c.peer.publishState(); b.clock.stop({ at: now.t }); await flush(80);
+    assert.equal(leaderOf(a, b, c).length, 1);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.58, `${t.peer.id}: the second edit landed`);
+    for (const t of [a, b, c]) t.peer.stop();
+  });
+}
