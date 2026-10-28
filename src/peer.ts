@@ -65,7 +65,9 @@ export interface NcSyncPeerOptions {
   locks?: LocksLike | null;
   /** Shared time now (seconds). Default `(performance.timeOrigin + performance.now()) / 1000`. */
   now?: () => number;
-  /** Instance id. Default random. */
+  /** Instance id. Default random. If you pin one, never reuse it for a new peer object: `seq` restarts at 1, so
+   * others drop its messages as repeats (dedupe) until they forget the old peer (`bye` or timeout), and its
+   * cancels can't match recalls the old object sent. */
   instanceId?: string;
   /** Current audio readiness. Default `'none'`. */
   audio?: () => AudioReadiness;
@@ -219,18 +221,28 @@ export class NcSyncPeer implements ClockAuthority {
   /**
    * Send a snapshot slot action (`recall` is idempotent; receivers never echo it). Returns the message's `seq`
    * (0 when the peer is not started), which a later {@link sendCancel} can name as `recallSeq`.
+   * Throws a TypeError for `op: 'cancel'` or a `recallSeq` (use {@link sendCancel}) and for a slot that is not an
+   * integer ≥ 0.
    */
-  sendSnapshot(op: SnapshotMessage['op'], slot: number, extra: { atBeat?: number; glide?: SnapshotMessage['glide']; recallSeq?: number } = {}): number {
+  sendSnapshot(op: Exclude<SnapshotMessage['op'], 'cancel'>, slot: number, extra: { atBeat?: number; glide?: SnapshotMessage['glide'] } = {}): number {
+    if ((op as string) === 'cancel' || 'recallSeq' in extra) throw new TypeError('nc-sync: send a cancel with sendCancel()');
+    if (!Number.isInteger(slot) || slot < 0) throw new TypeError(`nc-sync: slot must be an integer >= 0 (got ${String(slot)})`);
     return this.send({ type: 'snapshot', op, slot, ...extra });
   }
   /**
    * Withdraw this peer's pending `recall` (e.g. on Load or New), so followers that hold it don't switch on the bar
    * line. `slot` defaults to {@link ANY_SLOT}; pass `recallSeq` (from {@link sendSnapshot}) so the cancel can never
-   * withdraw a newer recall. Peers older than this op drop it (and still switch). Returns the message's `seq`.
+   * withdraw a newer recall. Peers before nc-clock 0.4.0 drop it (and still switch). Returns the message's `seq`.
+   * Throws a TypeError for a slot that is not {@link ANY_SLOT} or an integer ≥ 0, or a `recallSeq` that is not an
+   * integer ≥ 1 below the next `seq` (a recall this peer object sent). `recallSeq: 0` (a recall that was never sent)
+   * sends nothing and returns 0.
    */
   sendCancel(options: { slot?: number; recallSeq?: number } = {}): number {
-    return this.send({ type: 'snapshot', op: 'cancel', slot: options.slot ?? ANY_SLOT,
-      ...(options.recallSeq !== undefined ? { recallSeq: options.recallSeq } : {}) });
+    const slot = options.slot ?? ANY_SLOT, r = options.recallSeq;
+    if (r === 0) return 0; // the recall was never sent (sendSnapshot returned 0): nothing to withdraw
+    if (!Number.isInteger(slot) || (slot < 0 && slot !== ANY_SLOT)) throw new TypeError(`nc-sync: cancel slot must be ANY_SLOT or an integer >= 0 (got ${String(slot)})`);
+    if (r !== undefined && (!Number.isInteger(r) || r < 1 || r > this.seq)) throw new TypeError(`nc-sync: recallSeq must be the seq of a recall this peer sent (got ${String(r)})`);
+    return this.send({ type: 'snapshot', op: 'cancel', slot, ...(r !== undefined ? { recallSeq: r } : {}) });
   }
 
   /** ClockAuthority: local Play. */
