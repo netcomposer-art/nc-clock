@@ -317,18 +317,12 @@ export class NcSyncPeer implements ClockAuthority {
   private decideStart(): void {
     const t = this.clock.transport, now = this.o.now();
     this.idleEnd = false;
-    if (this.indep) {
-      // The session grid never restarts: a Play on a running session is a Join (answer with the state).
-      if (t.running) { this.broadcastState(); return; }
-      if (t.startTime !== null && t.stopTime !== null && now < t.stopTime) {
-        // A session end is still pending (the last instrument had just stopped): keep the run going instead.
-        this.clock.applySnapshot({ ...this.clock.toSnapshot(), playing: true, stopTime: null });
-      } else this.clock.commitStart(now + this.o.startLeadSeconds, 0);
-      this.broadcastState();
-      return;
-    }
-    // A running transport restarts on the next bar line, from beat 0.
-    this.clock.commitStart(t.isPlayingAt(now) && t.stopTime === null ? t.timeAt(t.nextBar(t.beatAt(now + this.o.minLeadSeconds))) : now + this.o.startLeadSeconds, 0);
+    // independentStop: the session grid never restarts, so a Play on a running session is a Join (answer with the
+    // state), and a pending session end (the last instrument had just stopped) keeps the run going instead.
+    // Otherwise a running transport restarts on the next bar line, from beat 0.
+    if (this.indep && t.running) { /* Join */ }
+    else if (this.indep && t.startTime !== null && t.stopTime !== null && now < t.stopTime) this.clock.applySnapshot({ ...this.clock.toSnapshot(), playing: true, stopTime: null });
+    else this.clock.commitStart(!this.indep && t.isPlayingAt(now) && t.stopTime === null ? t.timeAt(t.nextBar(t.beatAt(now + this.o.minLeadSeconds))) : now + this.o.startLeadSeconds, 0);
     this.broadcastState();
   }
   /** A session stop for everyone: an older peer's Stop, or `all`. */
@@ -386,10 +380,10 @@ export class NcSyncPeer implements ClockAuthority {
     const [lo, hi] = this.tempoRange();
     bpm = Math.min(hi, Math.max(lo, bpm));
     const t = this.clock.transport, now = this.o.now();
-    if (!t.running) { this.clock.commitTempo(bpm); this.broadcastState(); return; }
     const earliest = t.beatAt(now + this.o.minLeadSeconds);
     const beat = Math.max(atBeat ?? nextGridBeat(earliest, 1), earliest);
-    if (rampBeats && rampBeats > 0) { t.tempo.rampTempo(bpm, beat, rampBeats); this.clock.applySnapshot(this.clock.toSnapshot()); }
+    if (!t.running) this.clock.commitTempo(bpm);
+    else if (rampBeats && rampBeats > 0) { t.tempo.rampTempo(bpm, beat, rampBeats); this.clock.applySnapshot(this.clock.toSnapshot()); }
     else this.clock.commitTempo(bpm, beat);
     this.broadcastState();
   }
