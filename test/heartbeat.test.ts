@@ -167,3 +167,26 @@ test('heartbeat: no document or window (Node, workers): start and stop work with
   a.stop();
   assert.equal(a.beating, false);
 });
+
+test('heartbeat: a leader that stops while it holds a stale peer leaves no heartbeat timer behind', async () => {
+  // stop() clears the timer, then setLeader(false) beats once; that beat times the stale peer out, and the peer list
+  // change used to start the timer again (another peer was still known and the channel was still open). The stopped
+  // peer then beat forever, and kept a Node process alive.
+  const h = hub();
+  let t = 1000; const now = () => t;
+  const a = peer(h, 'a', now), fresh = peer(h, 'b', now), stale = peer(h, 'c', now);
+  try {
+    await a.start(); await wait(2 * HEARTBEAT_MS);
+    await fresh.start(); await stale.start(); await wait(4 * HEARTBEAT_MS);
+    assert.ok(a.isLeader, 'a leads');
+    assert.equal(a.peers.size, 2);
+    (stale as unknown as { channel: ChannelLike }).channel = { onmessage: null, postMessage() {}, close() {} }; // goes silent, no bye
+    t += 2; await wait(4 * HEARTBEAT_MS);   // a hears b at the new time; c is 2 s old
+    t += 1.5;                               // c is now past the 3 s timeout, b is not
+    a.stop();
+    assert.equal(a.beating, false, 'no heartbeat timer after stop()');
+    const sent = beatsFrom(h, 'a');
+    await wait(5 * HEARTBEAT_MS);
+    assert.equal(beatsFrom(h, 'a'), sent, 'a stopped peer sends no heartbeat');
+  } finally { a.stop(); fresh.stop(); stale.stop(); }
+});
