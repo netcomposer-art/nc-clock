@@ -209,7 +209,10 @@ With `AudioClockMapper` re-mapping the device clock, beat timing error is:
   event lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum before
   it is heard, so no mapper change can move it).
 
-These numeric gates are unchanged and enforced in CI.
+These numbers are unchanged. p95 ≤ 1 ms and max ≤ 3 ms are enforced in CI (test/drift.test.ts). The
+at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked automatically:
+neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI. ASTRID-Rhythm's
+sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and non-blocking.
 
 A confirmed excursion (a step, including one that later reverts as a blip) counts as one clock event under that
 same one-off-beat allowance; it doesn't add any extra allowance. If real sessions start showing repeated blip
