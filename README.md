@@ -203,17 +203,17 @@ drop repeats of (`from`, `seq`), never re-broadcast.
 
 With `AudioClockMapper` re-mapping the device clock, beat timing error is:
 
-- **p95 ≤ 1 ms** and **max ≤ 3 ms** after re-mapping.
-- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a real device
-  clock jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum
-  before it is heard, so no mapper change can move it). The error is one-off and never larger than the jump.
-- **Transients count as jumps.** An output-timestamp excursion that lasts longer than the ~20 ms confirmation is
-  applied at once, like a real step. If it comes back within `stepRevertMs` (200 ms) the mapper restores the
-  anchor it had before, exactly (no lasting re-anchor, and the next beat is back under 1 ms). A beat rendered
-  inside that window follows the excursion, so it is off by at most the excursion, and it is the one beat that
-  window's jump is allowed.
+- **Re-mapped p95 ≤ 1 ms.**
+- **Max ≤ 3 ms.**
+- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a device clock
+  event lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum before
+  it is heard, so no mapper change can move it).
 
-These limits are the CI gate.
+These numeric gates are unchanged and enforced in CI.
+
+A confirmed excursion (a step, including one that later reverts as a blip) counts as one clock event under that
+same one-off-beat allowance; it doesn't add any extra allowance. If real sessions start showing repeated blip
+beats, rejecting the blip in its first ~20 ms will be revisited.
 
 ## Browser support and limits
 

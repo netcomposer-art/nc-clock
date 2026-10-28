@@ -25,7 +25,9 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
   running; on resume they are kept if the context clock kept pace with wall time (within 10 ms), and dropped
   (re-measure, `ready` false until three new samples) if it stood still, as a real suspend does. A sinkchange
   always re-measures. Before, every statechange re-measured.
-- README "Timing guarantee": transients that revert are covered by the one-beat-per-jump allowance.
+- README "Timing guarantee" and docs/nc-clock.md: the numeric gates are unchanged (re-mapped p95 ≤ 1 ms, max ≤ 3 ms,
+  at most 1 beat over 3 ms per 10 minutes per tab). A confirmed excursion, including one that later reverts as a
+  blip, counts as one clock event under that same one-off-beat allowance and adds no extra allowance.
 
 ### Fixed
 - `AudioClockMapper.sample()` keeps one sample per output timestamp. `start()` and the first `sampleIfNotReady()`
