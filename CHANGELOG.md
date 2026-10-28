@@ -11,6 +11,10 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
   but provisionally; when the readings return to the pre-step anchor inside the window, that anchor is restored
   exactly, `reanchors` doesn't keep it, the new `reverts` counts it, and `onStep` fires with `revert: true`.
   From OLIVE Bass hidden-tab run 3 (Olive, ASTRID-Bass docs/sync-results.md).
+- `NcClock.subscribe(listener)`: a replaying subscription. It calls the listener at once with the current state
+  (`{ kind: 'snapshot', snapshot, replay: true }`), then on every change, so a scheduler attached after Tap to join
+  gets a clock on a steady device. `onChange` is unchanged (changes only, now documented). The `snapshot` change
+  gains an optional `replay` flag. Pattern from Rhythm's and Bass's `SnapshotFeed` (Petra, Olive).
 
 ### Changed
 - The mapper's median no longer allocates (a reused scratch array), so the 50 ms step check and every `offset`

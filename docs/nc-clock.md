@@ -63,7 +63,10 @@ sequencer), in Node, or ported to another language.
    clock (often tens of ppm), so an event keeps the mapping of the moment it was queued and drifts off the grid
    (83 ppm × 60 s ≈ 5 ms). `examples/metronome/retime-drift.js` does this on every tick.
 5. **Listen**: `clock.onChange(...)`. A start, stop, tempo change or new card can arrive at any time; recompute your
-   next beat from the clock (never from your own counters).
+   next beat from the clock (never from your own counters). A scheduler or worklet created later (after Tap to join
+   unlocks audio) uses `clock.subscribe(...)` instead: it gets the current state at once (`kind: 'snapshot'`,
+   `replay: true`), since a steady clock sends no change it could wait for. Map it with `mapper.offset` once
+   `mapper.ready`, and repost on `mapper.onStep`.
 6. Done. Your Play, Stop and tempo controls now go through the leader automatically.
 
 The metronome in `examples/metronome` does exactly this in about 100 lines.
