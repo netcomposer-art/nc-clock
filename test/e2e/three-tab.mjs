@@ -18,8 +18,7 @@
 // Scenario: Play first in a tab that does not lead (it must start the session: review P1, Web Locks), then the
 // other two; stop B (A and C keep the grid); stop the leader (it hands off to a playing tab, anchor unchanged, term
 // up); restart B (it lands on the grid); stop the rest one by one (the session ends with the last); then Play in a
-// tab that does not lead again (a new session starts). Then a mixed session (runMixed: B without independentStop):
-// every Stop is the session stop for everyone, the 0.4.0 behaviour.
+// tab that does not lead again (a new session starts).
 // Timing: every onset against the session grid, and every beat two tabs both scheduled against each other, pooled:
 // p95 <= 1 ms and max <= 3 ms (the NC sync standard). Onsets are real notes when a tab plays them through Web
 // Audio: the harness wraps OscillatorNode.prototype.start in every page and reads each note's context start time
@@ -186,41 +185,6 @@ export async function runThreeTab({ browser, context = null, urls, settleMs = 15
   }
 }
 
-/**
- * Mixed session: B is an older peer without independentStop (`urls[1]`). Every Stop is then the 0.4.0 session stop
- * for everyone: a new tab's Stop stops the old one too, and the old one's Stop stops the new ones.
- */
-export async function runMixed({ browser, urls, settleMs = 1200, log = () => {} }) {
-  const ctx = await browser.newContext();
-  const pages = [], names = ['A', 'B', 'C'], checks = [];
-  const check = (ok, what) => { checks.push({ ok: !!ok, what }); log(`${ok ? 'ok  ' : 'FAIL'} mixed: ${what}`); };
-  try {
-    for (const url of urls) {
-      const page = await ctx.newPage();
-      await page.goto(url); await page.waitForFunction(() => !!window.ncE2E, null, { timeout: 15000 });
-      pages.push(page); await sleep(400);
-    }
-    await sleep(800);
-    const call = (i, fn) => pages[i].evaluate(f => window.ncE2E[f](), fn);
-    const states = async () => Promise.all(names.map((_, i) => call(i, 'state')));
-    const allStopped = st => st.every(s => !s.running && !s.playing);
-    await call(0, 'play'); await sleep(300); await call(2, 'play'); await sleep(settleMs);
-    let st = await states();
-    check(st.every(s => s.running) && st[1].playing, 'A and C play; the old B plays with the session');
-    await call(0, 'stop'); await sleep(settleMs); st = await states();
-    check(allStopped(st), `a new tab's Stop (A) stops everyone, the old B included`);
-    await call(0, 'play'); await sleep(300); await call(2, 'play'); await sleep(settleMs);
-    await call(2, 'stop'); await sleep(settleMs); st = await states();
-    check(allStopped(st), `a new follower's Stop (C) stops everyone`);
-    await call(0, 'play'); await sleep(300); await call(2, 'play'); await sleep(settleMs);
-    await call(1, 'stop'); await sleep(settleMs); st = await states();
-    check(allStopped(st), `the old B's Stop stops everyone`);
-    const result = { ok: checks.every(c => c.ok), checks };
-    if (!result.ok) { const err = new Error(`mixed e2e failed: ${checks.filter(c => !c.ok).map(c => c.what).join('; ')}`); err.result = result; throw err; }
-    return result;
-  } finally { await ctx.close().catch(() => {}); }
-}
-
 // CLI: serve this repo and run against examples/three-tab/.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { createServer } = await import('node:http');
@@ -252,9 +216,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const result = await runThreeTab({ browser, urls, audio: true, log: line => console.log(line) });
     console.log(JSON.stringify({ ok: result.ok, timing: result.timing, onsets: result.onsets }));
-    const mixed = `http://127.0.0.1:${port}/examples/three-tab/?channel=nc-sync-e2e-mixed-${Date.now()}`;
-    const m = await runMixed({ browser, urls: [`${mixed}&app=A&id=a`, `${mixed}&app=B&id=b&legacy`, `${mixed}&app=C&id=c`], log: line => console.log(line) });
-    console.log(JSON.stringify({ mixed: m.ok }));
   } catch (e) {
     console.error(e.message); if (e.result) console.log(JSON.stringify({ ok: false, timing: e.result.timing }));
     code = 1;

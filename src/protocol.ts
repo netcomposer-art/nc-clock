@@ -46,7 +46,7 @@ export interface Capabilities {
   /**
    * Stop is per instrument (nc-clock 0.5.0, `NcSyncPeer({ independentStop: true })`): the peer sends its own
    * `playing` in `hello` and `heartbeat`, its Stop stops only itself, and the session (the shared transport) ends
-   * when the last instrument stops. Absent (older peers) means false: a Stop is a session stop, as in nc-clock 0.4.0 and earlier.
+   * when the last instrument stops. Absent means false: every Stop is a session stop.
    */
   independentStop?: boolean;
 }
@@ -88,9 +88,9 @@ export interface StateMessage extends Envelope {
   swing: number;
   leaderApp: string; stopAll?: boolean;
   /** Set by an `independentStop` leader: a plain transport stop here is a session end after the last instrument
-   * stopped, so receivers keep their own play state. Absent (older leaders): every stop stops every instrument. */
+   * stopped, so receivers keep their own play state. */
   independentStop?: boolean;
-  /** With a stop: every instrument stops (an older peer's Stop, or `all`). Only `independentStop` leaders send it. */
+  /** With a stop: every instrument stops (a `stop` request, or `all`). Only `independentStop` leaders send it. */
   endSession?: boolean;
 }
 /** Request (to the leader) to start or stop. */
