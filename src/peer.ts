@@ -150,8 +150,12 @@ export class NcSyncPeer implements ClockAuthority {
   private stopWakeListeners: (() => void) | null = null;
   private lockAbort: AbortController | null = null;
   private yielding = false;
+  /** Set while stop() runs: no election from a tab that is leaving. */
+  private leaving = false;
   private stopAll = false;
   private endingSession = false;
+  /** Leader: the pending session end came from the last instrument stopping (not a Stop for everyone). */
+  private idleEnd = false;
   /** Session swing carried over a handoff until this app publishes its own (independentStop only). */
   private carriedSwing: number | null = null;
   private readonly indep: boolean;
@@ -197,6 +201,7 @@ export class NcSyncPeer implements ClockAuthority {
   /** Join: open the channel, take the clock's authority, say hello, and enter election. */
   async start(): Promise<void> {
     if (this.channel) return;
+    this.leaving = false; this.yielding = false;
     this.channel = typeof this.channelOption === 'string' ? new BroadcastChannel(this.channelOption) as unknown as ChannelLike : this.channelOption;
     this.channel.onmessage = e => this.receive(e.data);
     this.joinedAt = this.o.now();
@@ -218,6 +223,7 @@ export class NcSyncPeer implements ClockAuthority {
     this.grace = null;
     this.stopWakeListeners?.(); this.stopWakeListeners = null;
     this.yielding = true;
+    this.leaving = true; // setLeader(false) beats once; that beat must not re-elect this tab
     this.lockAbort?.abort(); this.lockAbort = null;
     this.releaseLock?.(); this.releaseLock = null;
     this.setLeader(false);
@@ -299,6 +305,7 @@ export class NcSyncPeer implements ClockAuthority {
   // ---- leader decisions -------------------------------------------------------------
   private decideStart(): void {
     const t = this.clock.transport, now = this.o.now();
+    this.idleEnd = false;
     if (this.indep) {
       // The session grid never restarts: a Play on a running session is a Join (answer with the state).
       if (t.running) { this.broadcastState(); return; }
@@ -321,6 +328,7 @@ export class NcSyncPeer implements ClockAuthority {
   /** A session stop for everyone: an older peer's Stop, or `all`. */
   private decideStop(all: boolean): void {
     const at = this.o.now() + this.o.minLeadSeconds;
+    this.idleEnd = false;
     this.stopAll = all;
     this.endingSession = this.indep;
     this.carriedSwing = null;
@@ -336,6 +344,17 @@ export class NcSyncPeer implements ClockAuthority {
     this.carriedSwing = null;
     this.clock.commitStop(this.o.now() + this.o.minLeadSeconds, false);
     this.broadcastState();
+    this.idleEnd = true;
+  }
+  /**
+   * Leader: an instrument started playing while the last-stop end is still pending (it pressed Play on what it
+   * saw as a running grid). Keep the run at once, without waiting for its start request: no follower plays the
+   * old grid only to restart on a new one.
+   */
+  private keepRunForJoin(): void {
+    const t = this.clock.transport;
+    if (!this.leader || !this.indep || !this.idleEnd || t.startTime === null || t.stopTime === null || this.o.now() >= t.stopTime) return;
+    this.decideStart();
   }
   private anyMemberPlaying(): boolean {
     if (this.clock.playing) return true;
@@ -407,6 +426,7 @@ export class NcSyncPeer implements ClockAuthority {
           joinedAt: m.joinedAt, lastSeen: this.o.now(), outputLatencyMs: m.outputLatencyMs, independentStop, playing });
         const memberChanged = !prev || prev.playing !== playing;
         if (memberChanged) this.emitPeers();
+        if (memberChanged && playing === true) this.keepRunForJoin();
         // Answer a newcomer: the leader with the clock, everyone with a heartbeat (so it knows who is here).
         if (m.type === 'hello') { if (this.leader) this.broadcastState(); this.sendHeartbeat(); }
         this.elect();
@@ -469,8 +489,12 @@ export class NcSyncPeer implements ClockAuthority {
     for (const p of this.peers.values()) if (p.capabilities.canLead && !p.independentStop) return false;
     return true;
   }
-  /** Rank key for leading, lower first: [stopped while others may play, not prefersLeader, joinedAt]. */
-  private playKey(plays: boolean, ranked: boolean): number { return ranked && !plays ? 1 : 0; }
+  /**
+   * Rank key for leading, lower first: [stopped while others may play, not prefersLeader, joinedAt]. Playing
+   * counts only while the session runs: with no session, a Play is a start request to the current leader, and
+   * moving the lead at that moment would drop the request (with Web Locks the new leader takes over later).
+   */
+  private playKey(plays: boolean, ranked: boolean): number { return ranked && this.clock.transport.running && !plays ? 1 : 0; }
   /** A live peer that should lead before us (with Web Locks, where the lock queue breaks ties). */
   private outranked(): boolean {
     if (!this.caps.canLead) return true;
@@ -484,7 +508,7 @@ export class NcSyncPeer implements ClockAuthority {
     return false;
   }
   private elect(): void {
-    if (!this.channel) return;
+    if (!this.channel || this.leaving) return; // a leaving tab never re-elects itself
     const outranked = this.outranked();
     if (this.locks) {
       if (outranked) {
@@ -537,10 +561,14 @@ export class NcSyncPeer implements ClockAuthority {
   private setLeader(on: boolean): void {
     if (on === this.leader) return;
     this.leader = on;
+    this.idleEnd = false;
     // A handoff keeps the session swing: the new leader sends the swing it was following until its app publishes.
     this.carriedSwing = on && this.indep && this.clock.transport.running ? this.appliedSwing : null;
     if (on) { this.term += 1; this.broadcastState(); }
     for (const l of [...this.roleListeners]) l(on ? 'leader' : 'follower');
+    // A new leader whose own instrument plays on a stopped (or ending) session starts or keeps the run: a start
+    // request sent to the old leader may have been dropped in the handoff.
+    if (on && this.indep && this.clock.playing && !this.clock.transport.running) this.decideStart();
     this.beat();
   }
 

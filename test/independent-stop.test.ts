@@ -5,23 +5,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NcClock, type ClockChange } from '../src/core/index.js';
 import { NcSyncPeer, type ChannelLike, type LocksLike } from '../src/peer.js';
-import type { NcSyncMessage, StateMessage } from '../src/protocol.js';
+import { PROTOCOL, type NcSyncMessage, type StateMessage } from '../src/protocol.js';
 
 function hub() {
   const members = new Set<ChannelLike>();
   const log: NcSyncMessage[] = [];
-  return {
+  const hub = {
     log,
+    /** Lose matching messages in transit (a test of the paths that must not depend on them). */
+    drop: null as ((m: NcSyncMessage) => boolean) | null,
     channel(): ChannelLike {
       const ch: ChannelLike = {
         onmessage: null,
-        postMessage(data: unknown) { const copy = JSON.parse(JSON.stringify(data)); log.push(copy); for (const m of members) if (m !== ch) queueMicrotask(() => m.onmessage?.({ data: copy })); },
+        postMessage(data: unknown) { const copy = JSON.parse(JSON.stringify(data)); log.push(copy); if (hub.drop?.(copy)) return; for (const m of members) if (m !== ch) queueMicrotask(() => m.onmessage?.({ data: copy })); },
         close() { members.delete(ch); },
       };
       members.add(ch);
       return ch;
     },
   };
+  return hub;
 }
 function fakeLocks(): LocksLike {
   let held = false;
@@ -128,9 +131,9 @@ test('Play while others play is a Join on the next grid line: zero beat jump for
   for (const t of [a, b, c]) t.peer.stop();
 });
 
-test('the session ends only when the last instrument stops; a Play before it lands keeps the run', async () => {
+for (const locks of [false, true]) test(`the session ends only when the last instrument stops; a Play before it lands keeps the run${locks ? ' (Web Locks)' : ''}`, async () => {
   const now = { t: 3000 };
-  const { h, a, b, c } = await threeTabs(now);
+  const { h, a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null });
   for (const t of [a, b, c]) { t.clock.play({ at: now.t }); await flush(); now.t += 0.3; }
   const start = a.clock.transport.startTime;
   b.clock.stop({ at: now.t }); await flush();
@@ -141,30 +144,42 @@ test('the session ends only when the last instrument stops; a Play before it lan
   const end = states(h).at(-1)!;
   assert.equal(end.independentStop, true); assert.equal(end.endSession, undefined); assert.equal(end.clock.playing, false);
   // Pressed Play inside the stop's 0.1 s lead: the same run carries on (no restart from beat 0).
-  now.t += 0.05; b.clock.play({ at: now.t }); await flush();
+  now.t += 0.05; b.clock.play({ at: now.t }); await flush(60);
   assert.equal(b.clock.transport.running, true); assert.equal(b.clock.transport.startTime, start, 'resumed the same run');
   assert.equal(a.clock.transport.startTime, start);
-  b.clock.stop({ at: now.t }); await flush();
+  b.clock.stop({ at: now.t }); await flush(60);
   // After the end, Play starts a new session (beat 0, now + lead) as before.
-  now.t += 5; c.clock.play({ at: now.t }); await flush();
+  now.t += 5; c.clock.play({ at: now.t }); await flush(60);
   assert.ok(Math.abs(a.clock.transport.startTime! - (now.t + 0.2)) < 1e-9);
+  for (const t of [a, b, c]) assert.equal(t.clock.transport.running, true, `${t.peer.id}: the new session runs`);
   assert.equal(a.clock.playing, false, 'a new session does not start the other instruments');
+  assert.equal(leaderOf(a, b, c).length, 1, 'one leader');
   for (const t of [a, b, c]) t.peer.stop();
 });
 
-test('a tab that joins as the session ends gets the run back (no instrument left on a stopped grid)', async () => {
-  const now = { t: 3500 };
-  const { a, b, c } = await threeTabs(now);
-  a.clock.play({ at: now.t }); await flush();
-  const start = a.clock.transport.startTime;
-  now.t += 1;
-  // A stops while C presses Play on what it still sees as a running grid (crossing messages).
-  c.clock.play({ at: now.t }); a.clock.stop({ at: now.t }); await flush();
-  assert.equal(c.clock.playing, true);
-  for (const t of [a, b, c]) assert.equal(t.clock.transport.running, true, `${t.peer.id}: running`);
-  assert.equal(c.clock.transport.startTime, start);
-  for (const t of [a, b, c]) t.peer.stop();
-});
+for (const locks of [false, true]) for (const loseStart of [false, true]) {
+  test(`a tab that joins as the session ends gets the same run back${loseStart ? ', even if its start request is lost' : ''}${locks ? ' (Web Locks)' : ''}`, async () => {
+    const now = { t: 3500 };
+    const { h, a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null });
+    a.clock.play({ at: now.t }); await flush(60);
+    const start = a.clock.transport.startTime;
+    const ref = beatTimes(c, 0, 64);
+    now.t += 1;
+    // The keep-run must not hang on C's start request: the leader also keeps it on C's playing heartbeat.
+    if (loseStart) h.drop = m => m.type === 'transport';
+    const from = h.log.length;
+    // A stops while C presses Play on what it still sees as a running grid (crossing messages).
+    c.clock.play({ at: now.t }); a.clock.stop({ at: now.t }); await flush(60);
+    assert.equal(c.clock.playing, true);
+    for (const t of [a, b, c]) assert.equal(t.clock.transport.running, true, `${t.peer.id}: running`);
+    // The same run, never a restart: C does not play the old grid only to jump to a new one (no state with another start).
+    assert.equal(c.clock.transport.startTime, start);
+    assert.ok(h.log.slice(from).every(m => m.type !== 'state' || m.clock.startTime === start), 'no state carried a new run');
+    assertSyncGate(diffMs(beatTimes(c, 0, 64), ref), 'C on the kept run');
+    assert.equal(leaderOf(a, b, c).length, 1, 'one leader');
+    for (const t of [a, b, c]) t.peer.stop();
+  });
+}
 
 for (const locks of [false, true]) {
   test(`leader stop hands off to a playing peer: anchor unchanged, term + 1, swing carried${locks ? ' (Web Locks)' : ''}`, async () => {
@@ -292,3 +307,91 @@ test('a playing peer that vanishes is counted out: the session ends without it',
   assert.equal(a.clock.transport.running, false);
   a.peer.stop(); b.peer.stop();
 });
+
+// ---- Zeta review @338b291, P1: a Play in a non-leading tab must start the session, Web Locks included ----------
+// requestStart used to send the start to the old leader while its own heartbeat moved the lead (playing outranked
+// stopped even with no session); the old leader released the lock and dropped the start, and the new leader only
+// broadcast the stopped state: playing=true, running=false, 0 beats, forever.
+const two = async (now: { t: number }, locks: boolean) => {
+  const h = hub();
+  const L = locks ? fakeLocks() : null;
+  const a = tab(h, 'a-rhythm', now, { locks: L }); await a.peer.start(); await flush();
+  now.t += 1;
+  const b = tab(h, 'b-bass', now, { locks: L }); await b.peer.start(); await flush();
+  return { h, a, b };
+};
+for (const locks of [false, true]) {
+  const sfx = locks ? ' (Web Locks)' : '';
+  test(`Play in a non-leading tab when no session runs starts the session${sfx}`, async () => {
+    const now = { t: 9000 };
+    const { a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null });
+    assert.deepEqual(leaderOf(a, b, c), ['a-rhythm']);
+    now.t += 1; b.clock.play({ at: now.t }); await flush(60);
+    for (const t of [a, b, c]) assert.equal(t.clock.transport.running, true, `${t.peer.id}: running`);
+    assert.ok(Math.abs(b.clock.transport.startTime! - (now.t + 0.2)) < 1e-9, 'a new session at now + lead');
+    assert.ok(b.clock.playing && !a.clock.playing && !c.clock.playing, 'only B plays');
+    assert.equal(leaderOf(a, b, c).length, 1, 'one leader');
+    // Then the other non-leader joins; the session ends with the last Stop.
+    now.t += 0.7; c.clock.play({ at: now.t }); await flush(60);
+    assert.equal(c.clock.transport.startTime, b.clock.transport.startTime, 'C joined the same run');
+    for (const t of [b, c]) { now.t += 0.5; t.clock.stop({ at: now.t }); await flush(60); }
+    for (const t of [a, b, c]) assert.equal(t.clock.transport.running, false, `${t.peer.id}: ended`);
+    for (const t of [a, b, c]) t.peer.stop();
+  });
+  for (const order of ['playFirst', 'stopFirst'] as const) {
+    test(`the leader stops while the other tab presses Play (${order}): the run carries on for it${sfx}`, async () => {
+      const now = { t: 9500 };
+      const { a, b } = await two(now, locks);
+      a.clock.play({ at: now.t }); await flush(50);
+      const start = a.clock.transport.startTime;
+      now.t += 1;
+      if (order === 'playFirst') { b.clock.play({ at: now.t }); a.clock.stop({ at: now.t }); }
+      else { a.clock.stop({ at: now.t }); b.clock.play({ at: now.t }); }
+      await flush(80); now.t += 0.5; await flush(80);
+      assert.ok(b.clock.playing && !a.clock.playing);
+      for (const t of [a, b]) { assert.equal(t.clock.transport.running, true, `${t.peer.id}: running`); assert.equal(t.clock.transport.startTime, start, 'same run'); }
+      assert.equal(leaderOf(a, b).length, 1, 'one leader');
+      a.peer.stop(); b.peer.stop();
+    });
+  }
+  for (const gap of [0.05, 5]) {
+    test(`after the session ended (Play ${gap} s later), a follower's Play ${gap < 0.1 ? 'keeps the run' : 'starts a new session'}${sfx}`, async () => {
+      const now = { t: 9800 };
+      const { a, b } = await two(now, locks);
+      a.clock.play({ at: now.t }); await flush(50);
+      const start = a.clock.transport.startTime;
+      now.t += 1; a.clock.stop({ at: now.t }); await flush(80);
+      assert.equal(a.clock.transport.running, false);
+      now.t += gap; b.clock.play({ at: now.t }); await flush(80);
+      now.t += 0.5; await flush(50);
+      for (const t of [a, b]) assert.equal(t.clock.transport.running, true, `${t.peer.id}: running`);
+      if (gap < 0.1) assert.equal(b.clock.transport.startTime, start, 'inside the stop lead: the same run');
+      else assert.ok(Math.abs(b.clock.transport.startTime! - (now.t - 0.5 + 0.2)) < 1e-9, 'a new session at Play + lead');
+      assert.ok(b.clock.playing && !a.clock.playing);
+      assert.equal(leaderOf(a, b).length, 1, 'one leader');
+      a.peer.stop(); b.peer.stop();
+    });
+  }
+  test(`a tab that leaves never re-elects itself while leaving (P3a)${sfx}`, async () => {
+    const now = { t: 10_000 };
+    const { h, a, b } = await two(now, locks);
+    await flush(30);
+    assert.equal(a.peer.isLeader, true);
+    // A third peer that went silent: A's leaving beat times it out, which re-ran the election on A itself.
+    h.log.length = 0;
+    (a.peer as unknown as { receive(m: unknown): void }).receive({ proto: PROTOCOL, type: 'heartbeat', from: 'z-ghost', seq: 1, term: 0, sentAt: now.t,
+      app: 'ghost', leader: false, audio: 'none', hidden: false, joinedAt: now.t, outputLatencyMs: null, capabilities: { canLead: false } });
+    assert.ok(a.peer.peers.has('z-ghost'));
+    now.t += 10;
+    let roles: string[] = [];
+    a.peer.onRole(r => roles.push(r));
+    a.peer.stop(); await flush(60);
+    assert.deepEqual(roles, ['follower'], 'one role change: leader -> follower, never back');
+    assert.equal(a.peer.isLeader, false);
+    assert.ok(!h.log.some(m => m.from === 'a-rhythm' && m.type === 'state'), 'the leaving tab sent no state');
+    now.t += 0.1; await flush(60);
+    assert.equal(b.peer.isLeader, true, 'B takes over');
+    roles = [];
+    b.peer.stop();
+  });
+}
