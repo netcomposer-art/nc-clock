@@ -174,7 +174,8 @@ export class NcSyncPeer implements ClockAuthority {
   constructor(options: NcSyncPeerOptions) {
     const g = globalThis as { navigator?: { locks?: LocksLike }; document?: { visibilityState?: string }; crypto?: { randomUUID?: () => string }; performance?: Performance };
     this.clock = options.clock;
-    this.caps = { ...DEFAULT_CAPABILITIES, ...options.capabilities, ...(options.independentStop ? { independentStop: true } : {}) };
+    this.caps = { ...DEFAULT_CAPABILITIES, ...options.capabilities };
+    if (options.independentStop) this.caps.independentStop = true;
     this.indep = this.caps.independentStop === true;
     this.channelOption = options.channel ?? DEFAULT_CHANNEL;
     this.locks = options.locks === undefined ? g.navigator?.locks ?? null : options.locks;

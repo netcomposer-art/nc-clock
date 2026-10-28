@@ -125,7 +125,7 @@ export const SWING_MAX = 0.75;
 
 /** A usable `state.swing` (0.5 to 0.75), or null when it is unset, out of range or not a number. */
 export function readSwing(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= SWING_STRAIGHT && value <= SWING_MAX ? value : null;
+  return typeof value === 'number' && value >= SWING_STRAIGHT && value <= SWING_MAX ? value : null;
 }
 
 /** Default capabilities: a main-thread follower with no ramps, swing or meter. */
