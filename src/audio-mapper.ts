@@ -94,7 +94,8 @@ const STAMP_WAIT_MS = 500;
  * Keeps `contextTime ≈ sharedTime + offset`. Guards: ignores zero timestamps (before the
  * first rendered block), placeholder timestamps (contextTime below MIN_STAMP), non-running contexts, and
  * non-finite values; falls back to `currentTime − outputLatency` where `getOutputTimestamp` is missing (or
- * gives nothing real for STAMP_WAIT_MS). Check {@link AudioClockMapper.ready} before the first scheduling.
+ * gives nothing real for STAMP_WAIT_MS, counted from the last real reading). Check {@link AudioClockMapper.ready}
+ * (or call {@link AudioClockMapper.sampleIfNotReady}) before the first scheduling.
  *
  * @example
  * const mapper = new AudioClockMapper(ctx); mapper.start();
@@ -186,6 +187,7 @@ export class AudioClockMapper {
     const ts = typeof ctx.getOutputTimestamp === 'function' ? ctx.getOutputTimestamp() : null;
     if (ts && Number.isFinite(ts.contextTime) && Number.isFinite(ts.performanceTime) && ts.contextTime! >= MIN_STAMP && ts.performanceTime! > 0) {
       offset = ts.contextTime! - (this.timeOrigin + ts.performanceTime!) / 1000;
+      this.waitSince = null; // a real reading: a later run of non-real stamps waits STAMP_WAIT_MS afresh
     } else if (!ts || !(ts.contextTime! >= MIN_STAMP) && !(ts.contextTime! > 0 && !(ts.performanceTime! > 0))) {
       // No timestamp, or none real yet (zeros, or the placeholder Chrome gives for the first output callbacks:
       // contextTime ~0.00002 s while performanceTime runs on, ~20 then ~10 ms off). With a timestamp API, wait up
@@ -204,19 +206,23 @@ export class AudioClockMapper {
   }
 
   /**
-   * True once READY_SAMPLES (3) good samples exist; takes one from a new output timestamp while not. Until then
-   * {@link offset} is only a guess (`currentTime − now`, off by the output latency): wait for `ready` before
-   * scheduling against it.
+   * True once READY_SAMPLES (3) good samples exist. Pure: reading it never samples (use {@link sampleIfNotReady}
+   * to move it along). Until then {@link offset} is only a guess (`currentTime − now`, off by the output
+   * latency): wait for `ready` before scheduling against it.
    */
-  get ready(): boolean {
-    const need = Math.min(READY_SAMPLES, this.keep);
-    if (this.offsets.length < need) {
-      // One more sample, from a new output timestamp (the same stamp twice adds nothing to the median).
-      const ts = typeof this.ctx.getOutputTimestamp === 'function' ? this.ctx.getOutputTimestamp() : null;
-      const real = !!ts && ts.contextTime! >= MIN_STAMP && ts.performanceTime! > 0;
-      if (!real || ts!.contextTime !== this.readyStamp) { this.readyStamp = real ? ts!.contextTime : undefined; this.sample(); }
-    }
-    return this.offsets.length >= need;
+  get ready(): boolean { return this.offsets.length >= Math.min(READY_SAMPLES, this.keep); }
+
+  /**
+   * While not {@link ready}: take one sample if the output timestamp is new since the last call (the same stamp
+   * twice adds nothing to the median). Returns `ready`. Call it from a short retry loop before the first
+   * scheduling; the background timer (every `intervalMs`) gets there too, only slower.
+   */
+  sampleIfNotReady(): boolean {
+    if (this.ready) return true;
+    const ts = typeof this.ctx.getOutputTimestamp === 'function' ? this.ctx.getOutputTimestamp() : null;
+    const real = !!ts && ts.contextTime! >= MIN_STAMP && ts.performanceTime! > 0;
+    if (!real || ts!.contextTime !== this.readyStamp) { this.readyStamp = real ? ts!.contextTime : undefined; this.sample(); }
+    return this.ready;
   }
 
   /** contextTime − sharedTime (seconds), median of recent samples, plus the user offset. */

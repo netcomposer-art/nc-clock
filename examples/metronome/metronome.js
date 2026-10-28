@@ -34,7 +34,8 @@ function click(when, accent) {
 
 createTicker(() => {
   const t = clock.transport;
-  if (!t.running || !mapper.ready || ctx.state !== 'running') return;
+  // ready is a plain read; sampleIfNotReady() takes a sample from each new output timestamp until it is true.
+  if (!t.running || !mapper.sampleIfNotReady() || ctx.state !== 'running') return;
   const now = mapper.toSharedTime(ctx.currentTime);
   if (t.timeAt(nextBeat) < now - 0.1) resync();             // after a stall, skip ahead instead of a burst
   while (t.timeAt(nextBeat) < now + LOOKAHEAD) {

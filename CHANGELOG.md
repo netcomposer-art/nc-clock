@@ -3,7 +3,23 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
-## [Unreleased]
+## [0.3.0] - Unreleased
+
+Device clock step handling and a correct first reading for `AudioClockMapper`. **Breaking:** `ready` no longer
+takes a sample (see Changed and the migration note).
+
+### Changed
+- **Breaking:** `AudioClockMapper.ready` is now a pure getter: reading it never takes a sample. The sampling it
+  did moved to a new method, `sampleIfNotReady(): boolean`, which takes one sample while not ready (only when the
+  output timestamp is new) and returns `ready`.
+
+  Migration: code that polled `mapper.ready` to make progress (a ticker that waits for `ready` before scheduling)
+  must call `mapper.sampleIfNotReady()` instead. Code that only reads `ready` is unchanged. The bundled metronome
+  example is switched over. From ASTRID (Astrid, NetComposer-Synth PR #47).
+- The 500 ms wait before the `currentTime − outputLatency` fallback now restarts after every real reading.
+  Before, it was cleared only on a device or state change, so a later run of zero or placeholder stamps fell back
+  at once.
+
 
 ### Added
 - Device clock step handling in `AudioClockMapper`. A dropped or repeated output buffer moves the AudioContext clock

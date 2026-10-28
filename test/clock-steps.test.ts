@@ -117,16 +117,19 @@ test('first reading: placeholder output timestamps right after start are not use
   const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
   const truth = () => d.currentTime - (ORIGIN + d.perf) / 1000;
   d.getOutputTimestamp = () => ({ contextTime: 0.00002, performanceTime: d.perf });
-  assert.equal(m.ready, false, 'placeholder: not ready');
+  assert.equal(m.sampleIfNotReady(), false, 'placeholder: not ready');
   d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: 0.00005, performanceTime: d.perf });
-  assert.equal(m.ready, false, 'a moving placeholder: still not ready');
+  assert.equal(m.sampleIfNotReady(), false, 'a moving placeholder: still not ready');
   d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: d.currentTime, performanceTime: d.perf });
-  assert.equal(m.ready, false, 'one real stamp: not yet (median of three)');
-  assert.equal(m.ready, false, 'the same stamp again adds nothing');
+  assert.equal(m.sampleIfNotReady(), false, 'one real stamp: not yet (median of three)');
+  assert.equal(m.sampleIfNotReady(), false, 'the same stamp again adds nothing');
   d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: d.currentTime + 0.002, performanceTime: d.perf }); // a 2 ms jittery one
-  assert.equal(m.ready, false);
+  assert.equal(m.sampleIfNotReady(), false);
   d.perf += 10; d.getOutputTimestamp = () => ({ contextTime: d.currentTime, performanceTime: d.perf });
-  assert.equal(m.ready, true, 'three real stamps: ready');
+  assert.equal(m.ready, false, 'ready is pure: reading it takes no sample');
+  assert.equal(m.ready, false);
+  assert.equal(m.sampleIfNotReady(), true, 'three real stamps: ready');
+  assert.equal(m.ready, true);
   assert.ok(Math.abs((m.offset - truth()) * 1000) < 1e-3, `offset off by ${(m.offset - truth()) * 1000} ms`);
 });
 
@@ -134,8 +137,22 @@ test('first reading: a timestamp that never gets real falls back to currentTime 
   const d = device();
   d.getOutputTimestamp = () => ({ contextTime: 0, performanceTime: 0 });
   const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
-  assert.equal(m.ready, false);
-  d.perf += 400; assert.equal(m.ready, false);
-  d.perf += 200; m.sample(); m.sample(); assert.equal(m.ready, true);
+  assert.equal(m.sampleIfNotReady(), false);
+  d.perf += 400; assert.equal(m.sampleIfNotReady(), false);
+  d.perf += 200; assert.equal(m.sampleIfNotReady(), false, 'one fallback sample');
+  m.sample(); assert.equal(m.sampleIfNotReady(), true);
   assert.ok(Math.abs(m.offset - (d.currentTime - (ORIGIN + d.perf) / 1000)) < 1e-9);
+});
+
+test('first reading: a real reading resets the 500 ms wait, so a later run of zero stamps waits afresh', () => {
+  const d = device();
+  const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf });
+  d.getOutputTimestamp = () => ({ contextTime: 0, performanceTime: 0 });
+  assert.equal(m.sample(), false, 'zeros at start: waiting');
+  d.perf += 300; d.getOutputTimestamp = () => ({ contextTime: d.currentTime, performanceTime: d.perf });
+  assert.equal(m.sample(), true, 'real reading');
+  d.perf += 300; d.getOutputTimestamp = () => ({ contextTime: 0, performanceTime: 0 });
+  assert.equal(m.sample(), false, '600 ms after the first zeros, but only now since a real reading: still waits');
+  d.perf += 499; assert.equal(m.sample(), false);
+  d.perf += 2; assert.equal(m.sample(), true, 'falls back 500 ms into this run of zeros');
 });
