@@ -55,7 +55,7 @@ export interface PeerInfo {
   outputLatencyMs: number | null;
   /** It has per-instrument Stop (`capabilities.independentStop`, nc-clock 0.5.0). */
   independentStop: boolean;
-  /** Its own play state (`independentStop` peers), or null for an older peer, which plays whenever the session does. */
+  /** Its own play state (`independentStop` peers), or null for a peer without it. */
   playing: boolean | null;
 }
 
@@ -294,18 +294,14 @@ export class NcSyncPeer implements ClockAuthority {
   /**
    * ClockAuthority: local Stop. With `independentStop` (and no `all`) it stops only this instrument: a local state
    * change plus a heartbeat, no transport request. The leader ends the session once no instrument plays.
-   * `all: true` is a session stop for everyone, as before. In a mixed session (any known peer without
-   * `independentStop`) every Stop is a session stop for everyone again (without `all`), the 0.4.0 behaviour.
+   * `all: true` is a session stop for everyone, as before.
    */
   requestStop(request: StopRequest): void {
     this.becomeLeaderIfAlone();
     if (this.indep) {
       const now = this.o.now();
       this.setMember(false, Math.max(now, request.at ?? now));
-      // Mixed session (a peer without independentStop is here): Stop is the session stop for everyone, as in 0.4.0
-      // and earlier, but not `all` (no stopAll: free-running parts such as a latched arp keep their state). Decided
-      // per Stop from the peers known now, so it follows the peer set as peers come and go.
-      if (!request.all && !this.mixedSession()) return;
+      if (!request.all) return;
     }
     if (this.leader) { this.decideStop(request.all ?? false); return; }
     this.send({ type: 'transport', action: 'stop', all: request.all ?? false });
@@ -329,7 +325,7 @@ export class NcSyncPeer implements ClockAuthority {
     else this.clock.commitStart(!this.indep && t.isPlayingAt(now) && t.stopTime === null ? t.timeAt(t.nextBar(t.beatAt(now + this.o.minLeadSeconds))) : now + this.o.startLeadSeconds, 0);
     this.broadcastState();
   }
-  /** A session stop for everyone: an older peer's Stop, or `all`. */
+  /** A session stop for everyone: `all`, or any Stop without independentStop. */
   private decideStop(all: boolean): void {
     const at = this.o.now() + this.o.minLeadSeconds;
     this.idleEnd = false;
@@ -338,7 +334,7 @@ export class NcSyncPeer implements ClockAuthority {
     this.broadcastState(all || undefined, this.indep || undefined);
     if (this.indep) { this.everyoneStopped(); this.setMember(false, at); }
   }
-  /** Leader, independentStop: end the session when no instrument plays any more (older peers play while it runs). */
+  /** Leader, independentStop: end the session when no instrument plays any more. */
   private endSessionIfIdle(): void {
     if (!this.leader || !this.indep || !this.clock.transport.running || this.anyMemberPlaying()) return;
     this.carriedSwing = null;
@@ -358,16 +354,11 @@ export class NcSyncPeer implements ClockAuthority {
   }
   private anyMemberPlaying(): boolean {
     if (this.clock.playing) return true;
-    for (const p of this.peers.values()) if (!p.independentStop || p.playing === true) return true;
+    for (const p of this.peers.values()) if (p.playing === true) return true;
     return false;
   }
-  /** A known peer lacks independentStop: Stop falls back to the session stop for everyone. */
-  private mixedSession(): boolean {
-    for (const p of this.peers.values()) if (!p.independentStop) return true;
-    return false;
-  }
-  /** Does `p` play (for election)? Older peers play whenever the session runs. */
-  private peerPlays(p: PeerInfo): boolean { return p.independentStop ? p.playing === true : this.clock.transport.running; }
+  /** Does `p` play (for election)? */
+  private peerPlays(p: PeerInfo): boolean { return p.playing === true; }
   /** After a session stop for everyone: every instrument is stopped (their heartbeats confirm it). */
   private everyoneStopped(): void { for (const p of this.peers.values()) if (p.independentStop) p.playing = false; }
   /** This instrument's own play state changed: commit it locally, tell the others, re-run the election. */
@@ -467,8 +458,8 @@ export class NcSyncPeer implements ClockAuthority {
         if (this.editSwing !== null && (m.swing === this.editSwing || m.sentAt - this.editAt > 0.25)) this.editSwing = null;
         if (m.stopAll) this.clock.commitStop(m.clock.stopTime ?? this.o.now(), true);
         if (this.indep && !this.clock.transport.running) {
-          if (!m.independentStop || m.endSession || m.stopAll) {
-            // A session stop for everyone (an older leader's Stop, an older peer's, or `all`): this instrument stops too.
+          if (m.endSession || m.stopAll) {
+            // A session stop for everyone (`all`, or a leader's session stop): this instrument stops too.
             this.everyoneStopped();
             this.setMember(false, m.clock.stopTime ?? this.o.now());
           } else if (this.clock.playing) {
@@ -476,7 +467,7 @@ export class NcSyncPeer implements ClockAuthority {
             this.send({ type: 'transport', action: 'start' });
           }
         }
-        if (wasRunning !== this.clock.transport.running) this.elect(); // older peers' play state follows the session
+        if (wasRunning !== this.clock.transport.running) this.elect(); // the play key counts only while the session runs
         break;
       }
       case 'transport': if (this.leader) { if (m.action === 'start') this.decideStart(); else this.decideStop(m.all ?? false); } break;
@@ -489,23 +480,13 @@ export class NcSyncPeer implements ClockAuthority {
   }
 
   // ---- election ---------------------------------------------------------------------
-  /**
-   * independentStop: a playing instrument outranks a stopped one, so a leader that stops hands the lead to a playing
-   * peer. Only when every peer that can lead has independentStop: older peers rank by prefersLeader and age alone,
-   * and a mixed session must agree on one leader, so it keeps that order (the stopped leader keeps leading; the
-   * clock does not depend on the leader's own instrument).
-   */
-  private playRanked(): boolean {
-    if (!this.indep) return false;
-    for (const p of this.peers.values()) if (p.capabilities.canLead && !p.independentStop) return false;
-    return true;
-  }
+  // independentStop: a playing instrument outranks a stopped one, so a leader that stops hands the lead to a playing peer.
   /**
    * Rank key for leading, lower first: [stopped while others may play, not prefersLeader, joinedAt]. Playing
    * counts only while the session runs: with no session, a Play is a start request to the current leader, and
    * moving the lead at that moment would drop the request (with Web Locks the new leader takes over later).
    */
-  private playKey(plays: boolean): number { return !plays && this.clock.transport.running && this.playRanked() ? 1 : 0; }
+  private playKey(plays: boolean): number { return !plays && this.clock.transport.running && this.indep ? 1 : 0; }
   /** A live peer that should lead before us (with Web Locks, where the lock queue breaks ties). */
   private outranked(): boolean {
     if (!this.caps.canLead) return true;

@@ -48,9 +48,6 @@ merge #5 first.
   whose instrument plays on a stopped or ending session starts (or keeps) the run.
 - A tab that joined just as the last instrument stopped no longer depends on its start request: the leader keeps the
   run on its playing heartbeat (no old-grid notes, then a restart, when the request is late or lost).
-- Mixed sessions (Petra, on d5d7b86): an `independentStop` peer's Stop stayed local, so the older peer played on.
-  It is the session stop for everyone again while any known peer lacks the capability (see Compatibility). The e2e
-  has a mixed-session step (`?legacy` tab).
 - `stop()` no longer re-elects the leaving tab (its last beat could time out a peer and re-run the election).
 - Swing edits from a tab that does not lead (Petra, on d5d7b86): a follower's Play moves the lead to it, so the
   stopped ex-leader's later swing edit went nowhere. `publishState()` on a follower now sends its swing to the leader
@@ -59,17 +56,14 @@ merge #5 first.
   later), so a new leader applies it when the lead moves before the old leader did. Apps that only called
   `publishState()` while leading must call it on every swing edit. Tempo already went to the leader (`tempo`).
 - Size: the peer was trimmed (shared rank function, listener helpers, no duplicate timer and lock code) so the
-  0.5.0 fixes cost almost nothing over 9083844 (min+gz of the bundle 8,792 B there, 8,813 B now).
+  0.5.0 fixes cost almost nothing over 9083844 (min+gz of the bundle 8,792 B there, 8,813 B at 4901c59; 8,748 B once the mixed-session
+  fallback was removed).
 
 ### Compatibility
 - Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.4.0 and earlier.
-- Mixed sessions fall back to the 0.4.0 behaviour: while any known peer lacks the capability, every Stop, an
-  `independentStop` peer's included, is the session stop for everyone (a plain stop with `state.endSession`, not
-  `all`, so latched or free-running parts keep their state; no app change needed). It is decided per Stop from the
-  peers known then, so per-instrument Stop returns when the last older peer leaves. An old peer's Stop ends the
-  session for everyone, an old peer's Play on a running session joins it (an `independentStop` leader never restarts
-  a running grid), an `independentStop` peer counts an old one as playing while the session runs, and every peer
-  uses the earlier (0.4.0) leader ranking, so old and new peers agree on one leader (no play-state handoff).
+- No mixed sessions (Peter: no compatibility work, every instrument ships together from one domain): every peer
+  in an `independentStop` session must have it. The 0.4.0 fallback (any Stop stops everyone while a peer without the
+  capability is known, plain ranking) was removed with its tests and the e2e's `?legacy` step.
 
 ## [Unreleased]
 

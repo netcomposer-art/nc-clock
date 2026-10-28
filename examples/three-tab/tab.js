@@ -1,6 +1,6 @@
 // One "instrument" tab for the three-tab independent-stop e2e (test/e2e/three-tab.mjs). It schedules a beat on every
 // whole beat while clock.isPlayingAt(), from the shared clock only, and exposes the window.ncE2E hook the harness
-// drives. `?legacy` plays an older (0.4.0-style) peer without independentStop, for the mixed-session step. With `?audio`, every beat is also a real (silent) Web Audio note: an oscillator started at
+// drives. With `?audio`, every beat is also a real (silent) Web Audio note: an oscillator started at
 // AudioClockMapper.toContextTime(beat time), which the harness measures from outside (OscillatorNode.start). Instruments implement the same hook (see test/e2e/three-tab.mjs) to run the harness in their own suites.
 import { AudioClockMapper, NcClock, NcSyncPeer, createTicker, sharedNow } from '../../dist/index.js';
 
@@ -10,7 +10,7 @@ const clock = new NcClock({ bpm: 120, timebase: 'shared' });
 const swing = q.has('swing') ? Number(q.get('swing')) : null;
 const peer = new NcSyncPeer({
   app, version: '0.5.0', clock, channel: q.get('channel') ?? 'nc-sync-e2e', instanceId: q.get('id') ?? undefined,
-  independentStop: !q.has('legacy'), capabilities: { prefersLeader: q.has('prefersLeader'), swing: swing !== null },
+  independentStop: true, capabilities: { prefersLeader: q.has('prefersLeader'), swing: swing !== null },
   ...(swing !== null ? { swing: () => swing } : {}),
 });
 
