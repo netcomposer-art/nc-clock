@@ -125,8 +125,8 @@ over 3 ms per 10 minutes per tab. Beats during a blip can still be more than 3 m
 Bass's hidden-tab run 3 (the profile in test/clock-blips.test.ts), the worst beat was 5.3 ms off with and without
 the provisional step, and 10–13% of beat phases in the 500 ms around the excursion were over 3 ms. Rejecting blips
 early is deferred until real sessions show it matters. OLIVE Bass's hidden-tab run 3 (a ~5 ms excursion back in two
-parts over ~180 ms; 0.3.0 re-anchored on it and back 150 ms later, leaving its single-stamp anchor ~1 ms off) is
-replayed in `test/clock-blips.test.ts`. `stepRevertMs: 0` makes every confirmed step final, as in 0.3.0. A reading
+parts over ~180 ms; the 0.3.0 pre-release (b753634) re-anchored on it and back 150 ms later, leaving its single-stamp anchor ~1 ms off) is
+replayed in `test/clock-blips.test.ts`. `stepRevertMs: 0` makes every confirmed step final, as in b753634. A reading
 with `contextTime` or `performanceTime` of 0 (a device glitch) never counts, so it can never confirm a step. Pass
 `stepThresholdMs: 0` to turn this off.
 

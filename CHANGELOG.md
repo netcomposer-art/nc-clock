@@ -45,7 +45,7 @@ replaying `NcClock.subscribe`. **Breaking:** `ready` no longer
 takes a sample (see Changed and the migration note).
 
 The release every app vendors as "0.3.0 @ f509605". Tagging f509605 as `v0.3.0` and the npm publish wait for
-Peter. Notes and tests that compare against "0.3.0" before f509605 mean the pre-release at b753634.
+Peter.
 
 ### Changed
 - Documented the timing guarantee (README, "Timing guarantee"): after re-mapping, beat error p95 ≤ 1 ms and
@@ -131,8 +131,8 @@ Peter. Notes and tests that compare against "0.3.0" before f509605 mean the pre-
 
 ### Migration (consumers)
 Checked against OLIVE Bass `apps/bass/src/app/sync-clock.test.ts` (psemmelhack/ASTRID-Bass, branch
-olive/bass-css-nc-clock at 7bad965, vitest). On the 0.3.0 pre-release (b753634) all 6 pass. Three of them rely on its behaviour; on this
-release two fail and one passes but gets there later:
+olive/bass-css-nc-clock at 7bad965, vitest). On the 0.3.0 pre-release (b753634) all 6 pass. Three of them rely on
+its behaviour; on this release two fail and one passes but gets there later:
 - "waits for the mapper to be ready (3 real stamps), then publishes an audio-time snapshot at once": it relied on
   the double-counted stamp (`start()` plus the first `sampleIfNotReady()` on the same stamp counted as two
   readings, so one more poll made three). One stamp is now one sample, so `ready` needs three distinct stamps: the

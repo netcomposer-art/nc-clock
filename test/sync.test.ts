@@ -287,7 +287,7 @@ test('swing is loop-safe: handlers that republish do not echo, followers cannot 
 
 test('a peer that vanishes without bye (tab closed) leaves no sequence entry behind once it times out; stop() clears them', async () => {
   // Found in ASTRID's multi-tab crash soak (NetComposer-Synth fix/crash-soak 7ea28c8): one lastSeq entry (~100 B)
-  // stayed for every tab closed without bye, for the life of the page. 0.3.0 leaves 25 here.
+  // stayed for every tab closed without bye, for the life of the page. The 0.3.0 pre-release (b753634) leaves 25 here.
   const h = hub(), now = { t: 1000 };
   const a = makePeer(h, 'synth', now);
   await a.peer.start(); await flush();

@@ -2,9 +2,9 @@
 // no lasting re-anchor and puts the mapping back on the pre-step anchor exactly, while a real (persistent) device
 // clock step is still confirmed in ~20 ms. The replay follows OLIVE Bass's hidden-tab run 3 (ASTRID-Bass
 // docs/sync-results.md, nc-clock a9a9991): the leader's offset moved ~5 ms, came back in two parts over ~180 ms;
-// 0.3.0 re-anchored on it (−5.1 ms) and back 150 ms later (+4.1 ms), and the beat between landed 4 ms late.
+// the 0.3.0 pre-release (b753634) re-anchored on it (−5.1 ms) and back 150 ms later (+4.1 ms), and the beat between landed 4 ms late.
 //
-// Written against the public API only (options passed untyped), so the same file runs on 0.3.0 (b753634) as the
+// Written against the public API only (options passed untyped), so the same file runs on the 0.3.0 pre-release (b753634) as the
 // negative control: there, the blip tests fail.
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,7 +38,7 @@ type Opts = Record<string, number>;
 function setup(t: TestContext, blip?: (perfMs: number) => number, opts: Opts = {}) {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
   const d = device(blip);
-  // Untyped on purpose (see the header): `stepRevertMs` is not an option on 0.3.0.
+  // Untyped on purpose (see the header): `stepRevertMs` is not an option on b753634.
   const m = new AudioClockMapper(d, { timeOrigin: ORIGIN, perfNow: () => d.perf, ...opts } as object);
   const steps: Array<ClockStep & { at: number }> = [];
   m.onStep(s => steps.push({ ...s, at: d.perf }));
@@ -156,7 +156,7 @@ test('clock blips: a revert fires onStep with revert: true and the exact way bac
   assert.equal((m as unknown as { reverts: number }).reverts, 1);
 });
 
-test('clock blips (negative control): with stepRevertMs 0 the replay re-anchors for good, the 0.3.0 behaviour', (t) => {
+test('clock blips (negative control): with stepRevertMs 0 the replay re-anchors for good, the b753634 behaviour', (t) => {
   const { m, tick } = setup(t, oliveRun3(START), { stepRevertMs: 0 });
   tick(2500);
   m.stop();
