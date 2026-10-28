@@ -142,8 +142,11 @@ createTicker(() => {
 }).start();
 ```
 
-`clock.playing` is this instrument; `clock.transport.running` is the session. Mixed sessions work: next to an
-app without `independentStop`, that app's Stop still stops everyone, and leadership follows the earlier rules (0.4.0 and before).
+`clock.playing` is this instrument; `clock.transport.running` is the session. Mixed sessions fall back to the
+old behaviour: while any app without `independentStop` is in the session, every Stop (from any tab, old or new) is
+the session stop for everyone, as in 0.4.0 and before (a plain stop, not `all`, so latched or free-running parts
+keep their state), and leadership follows the earlier rules. This is decided per Stop from the peers known at that
+moment, so per-instrument Stop comes back as soon as the last older app leaves. No app change is needed.
 [examples/three-tab](examples/three-tab) is a runnable version, and `test/e2e/three-tab.mjs` drives three
 instrument tabs through the whole scenario (instruments can run it in their own suites; see the file).
 

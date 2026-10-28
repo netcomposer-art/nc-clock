@@ -36,14 +36,20 @@ merge #5 first.
   whose instrument plays on a stopped or ending session starts (or keeps) the run.
 - A tab that joined just as the last instrument stopped no longer depends on its start request: the leader keeps the
   run on its playing heartbeat (no old-grid notes, then a restart, when the request is late or lost).
+- Mixed sessions (Petra, on d5d7b86): an `independentStop` peer's Stop stayed local, so the older peer played on.
+  It is the session stop for everyone again while any known peer lacks the capability (see Compatibility). The e2e
+  has a mixed-session step (`?legacy` tab).
 - `stop()` no longer re-elects the leaving tab (its last beat could time out a peer and re-run the election).
 
 ### Compatibility
 - Without `independentStop` (the default) nothing changes: Stop stops the session for everyone, as in 0.4.0 and earlier.
-- Mixed sessions: next to a peer without the capability, an `independentStop` peer counts it as playing while the
-  session runs, an old peer's Stop ends the session for everyone, an old peer's Play on a running session joins it
-  (an `independentStop` leader never restarts a running grid), and every peer uses the earlier (0.4.0) leader ranking, so
-  old and new peers agree on one leader (no play-state handoff in a mixed session).
+- Mixed sessions fall back to the 0.4.0 behaviour: while any known peer lacks the capability, every Stop, an
+  `independentStop` peer's included, is the session stop for everyone (a plain stop with `state.endSession`, not
+  `all`, so latched or free-running parts keep their state; no app change needed). It is decided per Stop from the
+  peers known then, so per-instrument Stop returns when the last older peer leaves. An old peer's Stop ends the
+  session for everyone, an old peer's Play on a running session joins it (an `independentStop` leader never restarts
+  a running grid), an `independentStop` peer counts an old one as playing while the session runs, and every peer
+  uses the earlier (0.4.0) leader ranking, so old and new peers agree on one leader (no play-state handoff).
 
 ## [Unreleased]
 

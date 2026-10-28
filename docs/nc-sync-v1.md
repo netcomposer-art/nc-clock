@@ -136,9 +136,12 @@ Each instrument stops on its own; the session grid (the clock snapshot) is separ
   while no session runs (or one is ending) starts or keeps the run itself. A leader that stops while others play hands the lead to a playing peer; the new leader sends the
   snapshot unchanged (same anchor, tempo map, meter, start time) with a higher `term`, and keeps the session's
   swing until its app publishes its own. A beat is at the same time before and after the handoff.
-- **Mixed sessions.** If any peer that can lead lacks `independentStop`, every peer uses the plain ranking of
-  section 6, so old and new peers agree on one leader, and there is no play-state handoff. An old peer's Stop
-  stops everyone (as before); an old peer's Play on a running session joins it.
+- **Mixed sessions.** While any known peer lacks `independentStop`, a Stop on an `independentStop` peer is the
+  session stop for everyone, as in 0.4.0 (a leader's `state` with `endSession`, or a follower's `transport` stop
+  without `all`), so an old peer never plays on alone; decided per Stop from the peers known at that moment. If any
+  peer that can lead lacks `independentStop`, every peer uses the plain ranking of section 6, so old and new peers
+  agree on one leader, and there is no play-state handoff. An old peer's Stop stops everyone (as before); an old
+  peer's Play on a running session joins it.
 
 ### tempo (request)
 `bpm`; optional `atBeat`; optional `rampBeats`.
