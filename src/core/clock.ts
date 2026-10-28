@@ -11,7 +11,7 @@
  *
  * @module
  */
-import { Transport, type Meter, type TransportOptions } from './transport.js';
+import { Transport, nextGridBeat, type Meter, type TransportOptions } from './transport.js';
 import { applySnapshot, toSnapshot, type ClockSnapshot } from './snapshot.js';
 
 /** A request to start. Times are seconds on the clock's timeline. */
@@ -51,6 +51,12 @@ export interface ClockAuthority {
   requestStop(request: StopRequest): void;
   /** Local tempo changed. */
   requestTempo(request: TempoRequest): void;
+  /**
+   * True when this authority tracks the instrument's own play state apart from the shared transport (NC Sync
+   * `independentStop`): then {@link NcClock.playing} is the instrument's own flag, set with
+   * {@link NcClock.commitMember}, and Stop ends only this instrument. Absent or false: `playing` follows the transport.
+   */
+  readonly independentStop?: boolean;
 }
 
 /** What changed, for listeners. */
@@ -58,7 +64,12 @@ export type ClockChange =
   | { kind: 'start'; at: number; beat: number }
   | { kind: 'stop'; at: number; all: boolean }
   | { kind: 'tempo'; atBeat: number; bpm: number }
-  | { kind: 'snapshot'; snapshot: ClockSnapshot; replay?: boolean };
+  | { kind: 'snapshot'; snapshot: ClockSnapshot; replay?: boolean }
+  /**
+   * This instrument started or stopped on its own while the shared transport carries on (see
+   * {@link NcClock.playing}). `at` is when (the clock's timeline). Only an `independentStop` authority sends it.
+   */
+  | { kind: 'member'; playing: boolean; at: number };
 
 /** Options for {@link NcClock}. */
 export interface NcClockOptions extends TransportOptions {
@@ -81,6 +92,7 @@ export class NcClock {
   /** Snapshot timebase label. */
   readonly timebase: string;
   private authority: ClockAuthority | null = null;
+  private memberPlaying = false;
   private listeners = new Set<(change: ClockChange) => void>();
 
   /** Create a stopped clock. */
@@ -94,6 +106,26 @@ export class NcClock {
 
   /** Hand time to `authority` (null: back to standalone). */
   setAuthority(authority: ClockAuthority | null): void { this.authority = authority; }
+
+  /**
+   * Is this instrument playing? Standalone, or with an authority that does not track it, this is the transport's
+   * `running`. With an `independentStop` authority (an NC Sync peer created with `independentStop: true`) it is the
+   * instrument's own state: the shared transport (the session grid) can run while this instrument is stopped, so an
+   * engine gates its sound and playhead on this, and reads positions from {@link transport} as before.
+   */
+  get playing(): boolean { return this.authority?.independentStop ? this.memberPlaying : this.transport.running; }
+
+  /** Does this instrument sound at `time`: {@link playing} and the shared transport plays then. */
+  isPlayingAt(time: number): boolean { return this.playing && this.transport.isPlayingAt(time); }
+
+  /**
+   * Where an instrument that starts at `time` joins a running transport: the first multiple of `gridBeats` at or
+   * after the beat at `time` (default: the next whole beat), and when it sounds. Joining never moves the grid.
+   */
+  joinPoint(time: number, gridBeats = 1): { beat: number; time: number } {
+    const beat = nextGridBeat(this.transport.beatAt(time), gridBeats);
+    return { beat, time: this.transport.timeAt(beat) };
+  }
 
   /**
    * Listen to committed changes from now on (nothing is replayed: a listener added on a steady clock hears nothing
@@ -123,6 +155,7 @@ export class NcClock {
    */
   play(request: StartRequest & { at: number }): boolean {
     if (this.authority) { this.authority.requestStart(request); return false; }
+    this.memberPlaying = true;
     this.commitStart(request.at, request.beat ?? 0, request.bpm);
     return true;
   }
@@ -130,6 +163,7 @@ export class NcClock {
   /** Stop. Standalone: stops at `request.at` and returns true. External: forwards, returns false. */
   stop(request: StopRequest & { at: number }): boolean {
     if (this.authority) { this.authority.requestStop(request); return false; }
+    this.memberPlaying = false;
     this.commitStop(request.at, request.all ?? false);
     return true;
   }
@@ -161,6 +195,16 @@ export class NcClock {
   commitTempo(bpm: number, atBeat?: number): void {
     const beat = this.transport.setTempo(bpm, atBeat);
     this.emit({ kind: 'tempo', atBeat: beat, bpm: this.transport.tempo.bpmAt(beat) });
+  }
+
+  /**
+   * Commit this instrument's own play state (authorities call this; see {@link playing}). Emits a `member` change
+   * when it changes; the shared transport is untouched.
+   */
+  commitMember(playing: boolean, at: number): void {
+    if (playing === this.memberPlaying) return;
+    this.memberPlaying = playing;
+    this.emit({ kind: 'member', playing, at });
   }
 
   /** Replace the whole state with an authoritative snapshot (e.g. from the NC Sync leader). */
