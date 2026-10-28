@@ -205,8 +205,8 @@ With `AudioClockMapper` re-mapping the device clock, beat timing error is:
 
 - **Re-mapped p95 ≤ 1 ms.**
 - **Max ≤ 3 ms.**
-- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a device clock
-  event lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum before
+- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a real device clock
+  jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum before
   it is heard, so no mapper change can move it).
 
 These numbers are unchanged. p95 ≤ 1 ms and max ≤ 3 ms are enforced in CI (test/drift.test.ts). The
@@ -214,9 +214,12 @@ at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee b
 neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI. ASTRID-Rhythm's
 sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and non-blocking.
 
-A confirmed excursion (a step, including one that later reverts as a blip) counts as one clock event under that
-same one-off-beat allowance; it doesn't add any extra allowance. If real sessions start showing repeated blip
-beats, rejecting the blip in its first ~20 ms will be revisited.
+A reverted excursion (a blip: a confirmed step whose readings come back within `stepRevertMs`) is not a real device
+clock event and does not claim the one-beat allowance. Beats off during a blip count against the normal limit of at
+most 1 beat over 3 ms per 10 minutes per tab. Beats during a blip can still be more than 3 ms off: in a 50-seed
+replay of OLIVE Bass's hidden-tab run 3 (the profile in test/clock-blips.test.ts), the worst beat was 5.3 ms off
+with and without the provisional step, and 10–13% of beat phases in the 500 ms around the excursion were over 3 ms.
+Rejecting blips early is deferred until real sessions show it matters.
 
 ## Browser support and limits
 

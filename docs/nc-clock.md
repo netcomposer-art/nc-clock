@@ -105,23 +105,30 @@ re-anchor
 `offset` jumps by the step and `onStep(listener)` fires with `{ stepSeconds, confirmedAt, reanchors }`.
 One-off `getOutputTimestamp` spikes are ignored.
 
-A confirmed step is provisional for `stepRevertMs` (200 ms of audio clock time). If the readings come back to
-the anchor from before it within that window (within `stepThresholdMs`, confirmed by the same `stepConfirmations`
-readings), it was a transient, not a device clock step: the mapper restores that anchor and all its samples
-exactly, `reanchors` goes back down (`reverts` counts the revert), and `onStep` fires with `revert: true` and the
+A confirmed step is provisional for `stepRevertMs` (200 ms of audio clock time). If the readings come back to the
+anchor from before it within that window (within `stepThresholdMs`, confirmed by the same `stepConfirmations`
+readings), it was a transient, not a device clock step: the mapper restores that anchor and all its samples exactly,
+`reanchors` goes back down (`reverts` counts the revert), and `onStep` fires with `revert: true` and the
 `stepSeconds` that move everything back. Handle it like any step (repost, or `retimeForStep`); the steps of one
 window always add up to zero. Further steps inside an open window don't extend it, so a real step that stays is
 final 200 ms after it was confirmed, and a step that comes back after that is a second real step. Why provisional
-rather than waiting to see whether the readings trend back: waiting would push every real step's confirmation
-from ~20 ms to ~200 ms, and a ~10 ms buffer step chased that slowly is what made the 150 ms clock-link window
-lose ~10 ms beats. Timing guarantee (unchanged, README "Timing guarantee"): re-mapped
-p95 ≤ 1 ms, max ≤ 3 ms, and at most 1 beat over 3 ms per 10 minutes per tab. p95 ≤ 1 ms and max ≤ 3 ms are enforced in CI (test/drift.test.ts). The at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked automatically: neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI. ASTRID-Rhythm's sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and non-blocking. A confirmed excursion (a
-step, including one that later reverts as a blip) counts as one clock event under that same one-off-beat allowance;
-it doesn't add any extra allowance. If real sessions start showing repeated blip beats, rejecting the blip in its
-first ~20 ms will be revisited. OLIVE Bass's hidden-tab run 3 (a ~5 ms excursion back in two parts over ~180 ms; 0.3.0
-re-anchored on it and back 150 ms later, leaving its single-stamp anchor ~1 ms off) is replayed in
-`test/clock-blips.test.ts`. `stepRevertMs: 0` makes every confirmed step final, as in 0.3.0. A reading with `contextTime` or `performanceTime` of 0
-(a device glitch) never counts, so it can never confirm a step. Pass `stepThresholdMs: 0` to turn this off.
+rather than waiting to see whether the readings trend back: waiting would push every real step's confirmation from
+~20 ms to ~200 ms, and a ~10 ms buffer step chased that slowly is what made the 150 ms clock-link window lose ~10 ms
+beats. Timing guarantee (unchanged, README "Timing guarantee"): re-mapped p95 ≤ 1 ms, max ≤ 3 ms, and at most 1 beat
+over 3 ms per 10 minutes per tab. p95 ≤ 1 ms and max ≤ 3 ms are enforced in CI (test/drift.test.ts). The
+at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked automatically:
+neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI. ASTRID-Rhythm's
+sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and non-blocking. A reverted
+excursion (a blip: a confirmed step whose readings come back within `stepRevertMs`) is not a real device clock event
+and does not claim the one-beat allowance. Beats off during a blip count against the normal limit of at most 1 beat
+over 3 ms per 10 minutes per tab. Beats during a blip can still be more than 3 ms off: in a 50-seed replay of OLIVE
+Bass's hidden-tab run 3 (the profile in test/clock-blips.test.ts), the worst beat was 5.3 ms off with and without
+the provisional step, and 10–13% of beat phases in the 500 ms around the excursion were over 3 ms. Rejecting blips
+early is deferred until real sessions show it matters. OLIVE Bass's hidden-tab run 3 (a ~5 ms excursion back in two
+parts over ~180 ms; 0.3.0 re-anchored on it and back 150 ms later, leaving its single-stamp anchor ~1 ms off) is
+replayed in `test/clock-blips.test.ts`. `stepRevertMs: 0` makes every confirmed step final, as in 0.3.0. A reading
+with `contextTime` or `performanceTime` of 0 (a device glitch) never counts, so it can never confirm a step. Pass
+`stepThresholdMs: 0` to turn this off.
 
 What happens to notes already scheduled when the step lands:
 

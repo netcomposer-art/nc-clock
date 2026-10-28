@@ -25,9 +25,14 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
   running; on resume they are kept if the context clock kept pace with wall time (within 10 ms), and dropped
   (re-measure, `ready` false until three new samples) if it stood still, as a real suspend does. A sinkchange
   always re-measures. Before, every statechange re-measured.
-- README "Timing guarantee" and docs/nc-clock.md: the numeric gates are unchanged (re-mapped p95 ≤ 1 ms, max ≤ 3 ms,
-  at most 1 beat over 3 ms per 10 minutes per tab). A confirmed excursion, including one that later reverts as a
-  blip, counts as one clock event under that same one-off-beat allowance and adds no extra allowance.
+- README "Timing guarantee" and docs/nc-clock.md: the numbers are unchanged (re-mapped p95 ≤ 1 ms, max ≤ 3 ms, at
+  most 1 beat over 3 ms per 10 minutes per tab). A reverted excursion (a blip: a confirmed step whose readings come
+  back within `stepRevertMs`) is not a real device clock event and does not claim the one-beat allowance. Beats off
+  during a blip count against the normal limit of at most 1 beat over 3 ms per 10 minutes per tab. Beats during a
+  blip can still be more than 3 ms off: in a 50-seed replay of OLIVE Bass's hidden-tab run 3 (the profile in
+  test/clock-blips.test.ts), the worst beat was 5.3 ms off with and without the provisional step, and 10–13% of beat
+  phases in the 500 ms around the excursion were over 3 ms. Rejecting blips early is deferred until real sessions
+  show it matters.
 
 ### Fixed
 - `AudioClockMapper.sample()` keeps one sample per output timestamp. `start()` and the first `sampleIfNotReady()`
