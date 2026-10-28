@@ -13,8 +13,8 @@ NC Sync `snapshot` op `cancel`. Wire compatible: receivers before 0.4.0 drop it.
   don't switch on the bar line after the leader's Load or New dropped the queued slot. Optional `recallSeq` names the
   recall, so a stale cancel can't withdraw a newer one; `slot` is the recall's slot or `ANY_SLOT` (`-1`). A cancel
   after the recall was taken is a no-op. `NcSyncPeer.sendCancel({ slot?, recallSeq? })`; `cancelsRecall(cancel,
-  recall)` is the matching rule (allocation-free); `ANY_SLOT`, `SNAPSHOT_OPS`. Spec: docs/nc-sync-v1.md, section 3,
-  "cancel", including the unknown-op rule (receivers MUST drop and MUST NOT act on a snapshot op they don't know;
+  recall)` is the matching rule (allocation-free, checked in test/alloc.test.ts); `ANY_SLOT`, `SNAPSHOT_OPS`.
+  Spec: docs/nc-sync-v1.md, section 3, "cancel", including the unknown-op rule (receivers MUST drop and MUST NOT act on a snapshot op they don't know;
   a new op MUST be safe to ignore). From Rhythm's queued-slot audit (Petra; Bass #7, Olive); reviewed by Astrid.
 
 ### Changed
