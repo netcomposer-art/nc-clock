@@ -34,6 +34,35 @@ export interface AudioClockMapperOptions {
   timeOrigin?: number;
   /** `performance.now()` (ms). Injected for tests. */
   perfNow?: () => number;
+  /**
+   * Device clock step threshold (ms). A raw reading this far from the median, agreeing on
+   * {@link stepConfirmations} consecutive checks, re-anchors at once. Default 2. `0` turns detection off.
+   */
+  stepThresholdMs?: number;
+  /** Consecutive agreeing readings that confirm a step. Default 3 (one-off spikes are ignored). */
+  stepConfirmations?: number;
+  /** Step check period while started (ms). Default 50, so a step is confirmed ~100–150 ms after it lands. */
+  stepCheckMs?: number;
+}
+
+/** A confirmed device clock step, as handed to {@link AudioClockMapper.onStep} listeners. */
+export interface ClockStep {
+  /** New offset − old offset (s). Positive: contextTime jumped ahead of wall time (a dropped buffer). */
+  stepSeconds: number;
+  /** `ctx.currentTime` when the step was confirmed. Anything rendered before this is already heard. */
+  confirmedAt: number;
+  /** Steps re-anchored since construction, including this one. */
+  reanchors: number;
+}
+
+/**
+ * Re-time one context-time event that was computed with the offset in force before `step`.
+ * Not yet rendered (`when` later than `renderedUntil`, normally `ctx.currentTime` plus one render
+ * quantum): it moves by the step and lands on the shared grid. Already rendered: it stays, and that
+ * one event is off by `step.stepSeconds` (bounded by the step, at most the detection window long).
+ */
+export function retimeForStep(when: number, step: Pick<ClockStep, 'stepSeconds'>, renderedUntil: number): number {
+  return when > renderedUntil ? when + step.stepSeconds : when;
 }
 
 /** Shared NC Sync time now, in seconds since the Unix epoch (`timeOrigin + now`). */
@@ -67,7 +96,15 @@ export class AudioClockMapper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLatencyRead = -Infinity;
   private latency: number | null = null;
-  private readonly onSink = () => { this.offsets = []; this.readLatency(true); this.sample(); };
+  private readonly onSink = () => { this.offsets = []; this.pendingStep = null; this.pendingCount = 0; this.readLatency(true); this.sample(); };
+  private readonly stepThreshold: number;
+  private readonly stepConfirmations: number;
+  private readonly stepCheckMs: number;
+  private stepTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingStep: number | null = null;
+  private pendingCount = 0;
+  private stepCount = 0;
+  private readonly stepListeners = new Set<(step: ClockStep) => void>();
   /** Manual offset in ms (the ±250 ms per-tab slider). */
   userOffsetMs: number;
 
@@ -80,6 +117,43 @@ export class AudioClockMapper {
     this.userOffsetMs = options.userOffsetMs ?? 0;
     this.timeOrigin = options.timeOrigin ?? performance.timeOrigin;
     this.perfNow = options.perfNow ?? (() => performance.now());
+    this.stepThreshold = Math.max(0, options.stepThresholdMs ?? 2) / 1000;
+    this.stepConfirmations = Math.max(1, options.stepConfirmations ?? 3);
+    this.stepCheckMs = options.stepCheckMs ?? 50;
+  }
+
+  /** Device clock steps re-anchored so far. */
+  get reanchors(): number { return this.stepCount; }
+
+  /** Hear confirmed device clock steps (repost your snapshot, re-time queued events). Returns an unsubscribe. */
+  onStep(listener: (step: ClockStep) => void): () => void { this.stepListeners.add(listener); return () => { this.stepListeners.delete(listener); }; }
+
+  /**
+   * One step check. A device clock step (a dropped or repeated output buffer moves contextTime against
+   * wall time by a whole buffer, ~10 ms) would otherwise take the 9-sample median ~1–2 s to follow.
+   * Only real output timestamps count: `contextTime` and `performanceTime` must both be > 0, so a
+   * glitch reading (performanceTime 0, position frozen) never confirms a step. Returns true on a re-anchor.
+   * Approach and constants from OLIVE Bass `clock-link` (Olive, ASTRID-Bass PR #1).
+   */
+  checkStep(): boolean {
+    if (this.stepThreshold === 0 || this.ctx.state !== 'running' || !this.offsets.length) return false;
+    const ts = typeof this.ctx.getOutputTimestamp === 'function' ? this.ctx.getOutputTimestamp() : null;
+    const c = ts?.contextTime ?? 0, p = ts?.performanceTime ?? 0;
+    if (!(c > 0 && p > 0) || !Number.isFinite(c) || !Number.isFinite(p)) return false;
+    const raw = c - (this.timeOrigin + p) / 1000;
+    const step = raw - median(this.offsets);
+    if (Math.abs(step) <= this.stepThreshold) { this.pendingStep = null; this.pendingCount = 0; return false; }
+    if (this.pendingStep !== null && Math.abs(step - this.pendingStep) < this.stepThreshold / 2) {
+      if (++this.pendingCount < this.stepConfirmations) return false;
+      this.offsets = [raw];
+      this.pendingStep = null; this.pendingCount = 0; this.stepCount++;
+      const event: ClockStep = { stepSeconds: step, confirmedAt: this.ctx.currentTime, reanchors: this.stepCount };
+      for (const l of [...this.stepListeners]) l(event);
+      return true;
+    }
+    this.pendingStep = step; this.pendingCount = 1;
+    if (this.stepConfirmations === 1) return this.checkStep();
+    return false;
   }
 
   /** Shared time now (seconds). */
@@ -126,6 +200,7 @@ export class AudioClockMapper {
     if (this.timer) return;
     this.sample();
     this.timer = setInterval(() => this.sample(), this.intervalMs);
+    if (this.stepThreshold > 0) this.stepTimer = setInterval(() => this.checkStep(), this.stepCheckMs);
     this.ctx.addEventListener?.('sinkchange', this.onSink);
     this.ctx.addEventListener?.('statechange', this.onSink);
   }
@@ -134,6 +209,8 @@ export class AudioClockMapper {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.stepTimer) clearInterval(this.stepTimer);
+    this.stepTimer = null;
     this.ctx.removeEventListener?.('sinkchange', this.onSink);
     this.ctx.removeEventListener?.('statechange', this.onSink);
   }

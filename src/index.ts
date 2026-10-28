@@ -10,6 +10,6 @@
  */
 export * from './core/index.js';
 export * from './protocol.js';
-export { AudioClockMapper, sharedNow, median, type AudioContextLike, type AudioClockMapperOptions } from './audio-mapper.js';
+export { AudioClockMapper, sharedNow, median, retimeForStep, type AudioContextLike, type AudioClockMapperOptions, type ClockStep } from './audio-mapper.js';
 export { createTicker, type Ticker, type TickerOptions } from './ticker.js';
 export { NcSyncPeer, type NcSyncPeerOptions, type PeerInfo, type ChannelLike, type LocksLike } from './peer.js';

@@ -3,6 +3,17 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
+## [Unreleased]
+
+### Added
+- Device clock step handling in `AudioClockMapper`. A dropped or repeated output buffer moves the AudioContext clock
+  against wall time by a whole buffer (~10 ms); the 9-sample median took 1–2 s to follow it. The mapper now
+  re-anchors on a confirmed step. Options: `stepThresholdMs` (2, `0` = off), `stepConfirmations` (3) and
+  `stepCheckMs` (50). New: `checkStep()`, `onStep(listener)` and `reanchors`. Zero output timestamps never count.
+- `retimeForStep(when, step, renderedUntil)` and the `ClockStep` type, for schedulers that queue events ahead.
+- docs/nc-clock.md: "Device clock steps". Approach and constants from OLIVE Bass `clock-link` (Olive); patch by
+  Petra (ASTRID Rhythm). Not a wire change.
+
 ## [0.2.0] - 2026-10-27
 
 Session swing over NC Sync, based on a contributed patch.

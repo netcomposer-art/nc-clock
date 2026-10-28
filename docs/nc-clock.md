@@ -65,6 +65,32 @@ sequencer), in Node, or ported to another language.
 
 The metronome in `examples/metronome` does exactly this in about 100 lines.
 
+## Device clock steps
+
+A dropped or repeated output buffer moves the AudioContext clock against wall time by a whole buffer
+(~10 ms) at once. The median of nine samples would take one to two seconds to follow it. That is a
+10 ms error on every note in between, and it lasts longer in a hidden tab. While started,
+`AudioClockMapper` checks every `stepCheckMs` (50 ms). A raw reading more than `stepThresholdMs` (2 ms)
+from the median that agrees on `stepConfirmations` (3) consecutive checks re-anchors the mapper at once:
+`offset` jumps by the step and `onStep(listener)` fires with `{ stepSeconds, confirmedAt, reanchors }`.
+One-off `getOutputTimestamp` spikes are ignored. A reading with `contextTime` or `performanceTime` of 0
+(a device glitch) never counts, so it can never confirm a step. Pass `stepThresholdMs: 0` to turn this off.
+
+What happens to notes already scheduled when the step lands:
+
+- **Snapshot schedulers** (a worklet that maps every render block from a posted clock snapshot): repost the
+  snapshot in `onStep`. Every block after that is exact.
+- **Queued schedulers** (events placed ahead in context time): re-time every event not yet rendered with
+  `retimeForStep(when, step, ctx.currentTime + quantum)`, which adds the step. Events already handed to
+  something that can't move (an `AudioBufferSourceNode.start(t)`) need cancel-and-restart if they fall
+  after `confirmedAt`.
+- **Either way**, a note rendered between the step and its confirmation (at most 3 × 50 ms, and at most
+  the timer period in a hidden tab) is off by exactly the step. That is a bounded one-off error.
+  `test/clock-steps.test.ts` shows all three cases with a simulated 10 ms step.
+
+The approach and constants come from OLIVE Bass's `clock-link` (Olive, ASTRID-Bass PR #1), including
+its test that zero timestamps never re-anchor.
+
 ## Example: a synth engine
 
 A synth engine typically owns one `NcClock` on AudioContext time. Its note generator, arpeggiator and LFO grid all
