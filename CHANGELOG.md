@@ -19,6 +19,12 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 ### Changed
 - The mapper's median no longer allocates (a reused scratch array), so the 50 ms step check and every `offset`
   read are allocation-free.
+- `AudioClockMapper.ready` stays true across a confirmed step: the samples move with the step instead of being
+  replaced by one, so `ready` no longer reads false inside `onStep` (Bass worked around it with its own
+  `measured` flag, which it can drop). Suspend/resume: a statechange keeps the samples while the context isn't
+  running; on resume they are kept if the context clock kept pace with wall time (within 10 ms), and dropped
+  (re-measure, `ready` false until three new samples) if it stood still, as a real suspend does. A sinkchange
+  always re-measures. Before, every statechange re-measured.
 - README "Timing guarantee": transients that revert are covered by the one-beat-per-jump allowance.
 
 ## [0.3.0] - Unreleased

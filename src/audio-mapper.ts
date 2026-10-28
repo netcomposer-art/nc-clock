@@ -108,6 +108,12 @@ const MIN_STAMP = 0.003;
  * by up to ~2 ms (headless Chrome under load); the median of three drops one such reading.
  */
 const READY_SAMPLES = 3;
+/**
+ * Resume (s): a context clock that kept pace with wall time within this across a statechange keeps its anchor.
+ * Larger than `currentTime`'s render-quantum steps (2.7 ms at 48 kHz, 5.8 ms at 22.05 kHz); anything smaller that
+ * is real is a clock step, which step detection confirms. With step detection off, any mismatch re-measures.
+ */
+const RESUME_TOLERANCE = 0.01;
 /** How long (ms) to wait for a real output timestamp before falling back to `currentTime − latency`. */
 const STAMP_WAIT_MS = 500;
 
@@ -133,7 +139,29 @@ export class AudioClockMapper {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLatencyRead = -Infinity;
   private latency: number | null = null;
+  /** Re-measure from scratch: the anchor is invalid (a new output device, or a context clock that stood still). */
   private readonly onSink = () => { this.offsets.length = 0; this.revertUntil = -Infinity; this.clearPending(); this.waitSince = null; this.readLatency(true); this.sample(); };
+  // Context time and perfNow (ms) when the context stopped running (null: running, or never seen stopping).
+  private pausedCtx: number | null = null;
+  private pausedWall = 0;
+  /**
+   * Suspend/resume (statechange): the samples are kept while the context isn't running (nothing samples then).
+   * On resume, if the context clock kept pace with wall time (within RESUME_TOLERANCE) the anchor is still valid
+   * and `ready` stays true; if it stood still (a real suspend: currentTime freezes) the anchor is invalid, so the
+   * mapper re-measures and `ready` is false until three new real samples.
+   */
+  private readonly onState = () => {
+    const ctx = this.ctx;
+    if (ctx.state !== 'running') {
+      this.clearPending();
+      if (this.pausedCtx === null) { this.pausedCtx = ctx.currentTime; this.pausedWall = this.perfNow(); }
+      return;
+    }
+    if (this.pausedCtx === null) return;
+    const lag = (ctx.currentTime - this.pausedCtx) - (this.perfNow() - this.pausedWall) / 1000;
+    this.pausedCtx = null;
+    if (!(Math.abs(lag) <= (this.stepThreshold > 0 ? RESUME_TOLERANCE : 0))) this.onSink();
+  };
   // When the timestamp had nothing real yet (zeros, or a placeholder below MIN_STAMP), since when (perfNow ms).
   private waitSince: number | null = null;
   private readyStamp: number | undefined = undefined;
@@ -247,7 +275,9 @@ export class AudioClockMapper {
         this.preStepBase = base; this.preStepCount = this.stepCount;
         this.revertUntil = this.stepRevert > 0 ? now + this.stepRevert : -Infinity;
       }
-      this.offsets.length = 0; this.offsets.push(raw);
+      // Move every sample by the step (the median lands on `raw` exactly), so `ready` stays true across it.
+      const o = this.offsets, d = raw - base;
+      for (let i = 0; i < o.length; i++) o[i] += d;
       this.stepCount++;
       event = { stepSeconds: raw - base, confirmedAt: now, reanchors: this.stepCount, revert: false };
     }
@@ -312,7 +342,10 @@ export class AudioClockMapper {
   }
 
   /**
-   * True once READY_SAMPLES (3) good samples exist. Pure: reading it never samples (use {@link sampleIfNotReady}
+   * True once READY_SAMPLES (3) good samples exist. It stays true across a confirmed step or a revert (also inside
+   * `onStep`), and across a statechange where the context clock kept pace. It goes false when the anchor is
+   * invalid: an output device change (sinkchange), or a resume after the context clock stood still (a real
+   * suspend); then it takes three new real samples. Pure: reading it never samples (use {@link sampleIfNotReady}
    * to move it along). Until then {@link offset} is only a guess (`currentTime − now`, off by the output
    * latency): wait for `ready` before scheduling against it.
    */
@@ -353,7 +386,9 @@ export class AudioClockMapper {
     this.timer = setInterval(() => this.sample(), this.intervalMs);
     if (this.stepThreshold > 0) this.stepTimer = setInterval(() => this.checkStep(), this.stepCheckMs);
     this.ctx.addEventListener?.('sinkchange', this.onSink);
-    this.ctx.addEventListener?.('statechange', this.onSink);
+    this.pausedCtx = null;
+    if (this.ctx.state !== 'running') this.onState();
+    this.ctx.addEventListener?.('statechange', this.onState);
   }
 
   /** Stop background sampling. */
@@ -364,7 +399,7 @@ export class AudioClockMapper {
     this.stepTimer = null;
     this.clearPending();
     this.ctx.removeEventListener?.('sinkchange', this.onSink);
-    this.ctx.removeEventListener?.('statechange', this.onSink);
+    this.ctx.removeEventListener?.('statechange', this.onState);
   }
 
   private readLatency(force: boolean): void {

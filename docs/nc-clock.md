@@ -83,6 +83,12 @@ a short retry loop (it takes a sample only when the output timestamp is new, and
 background timer gets there too, every `intervalMs`. If a browser with the timestamp API gives nothing real for 500 ms, the mapper falls back
 to `currentTime − outputLatency`, as it does where the API is missing.
 
+Once true, `ready` stays true across a confirmed device clock step or a revert (the samples move with the step,
+so it reads true inside `onStep` too), and across a statechange where the context clock kept pace with wall time
+(within 10 ms). It goes false, and takes three new real samples, only when the anchor is invalid: after an output
+device change (`sinkchange`), or on resume after the context clock stood still (a real suspend freezes
+`currentTime` while wall time runs on). While the context isn't running the samples are kept and nothing samples.
+
 ## Device clock steps
 
 A dropped or repeated output buffer moves the AudioContext clock against wall time by a whole buffer
