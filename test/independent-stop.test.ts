@@ -566,3 +566,23 @@ for (const locks of [false, true]) {
     for (const t of [a, b, c]) t.peer.stop();
   });
 }
+
+// ---- Zeta (Rhythm #32 review): leader rank under Web Locks -------------------------------------------------------
+// Without Web Locks the best rank leads: [playing, prefersLeader, joinedAt, id]. With Web Locks the rank only decides
+// who yields ([playing, prefersLeader]); among the rest the lock queue decides, in request order. A tab that yielded
+// (it stopped while others played) and plays again queues behind the tabs already waiting, whatever its joinedAt.
+for (const locks of [false, true]) {
+  test(`leader rank after a handoff: ${locks ? 'the lock queue (request order), not joinedAt (Web Locks)' : 'oldest joinedAt'}`, async () => {
+    const now = { t: 13_000 };
+    const { a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null });
+    for (const t of [a, b, c]) { t.clock.play({ at: now.t }); await flush(60); now.t += 0.25; }
+    assert.deepEqual(leaderOf(a, b, c), ['a-rhythm']);
+    b.clock.stop({ at: now.t }); await flush(80); // B yields (leaves the lock queue)
+    now.t += 0.25; b.clock.play({ at: now.t }); await flush(80); // and queues again, now behind C
+    now.t += 0.25; a.clock.stop({ at: now.t }); await flush(80);
+    const joined = (id: string) => a.peer.peers.get(id)!.joinedAt;
+    assert.ok(joined('b-bass') < joined('c-synth'), 'B joined before C');
+    assert.deepEqual(leaderOf(a, b, c), [locks ? 'c-synth' : 'b-bass']);
+    for (const t of [a, b, c]) t.peer.stop();
+  });
+}
