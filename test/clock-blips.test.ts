@@ -152,7 +152,7 @@ test('clock blips: a revert fires onStep with revert: true and the exact way bac
   const last = steps[steps.length - 1] as ClockStep;
   assert.equal((last as { revert?: boolean }).revert, true);
   const sum = steps.reduce((a, s) => a + s.stepSeconds, 0);
-  assert.ok(Math.abs(sum) < 1e-9, `the steps sum to zero (${sum * 1000} ms): queued events re-timed by each land back`);
+  assert.ok(Math.abs(sum) < 1e-9, `the offset returns exactly to the pre-step anchor (steps total ${sum * 1000} ms): queued events re-timed by each land back`);
   assert.equal((m as unknown as { reverts: number }).reverts, 1);
 });
 

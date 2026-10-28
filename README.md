@@ -209,10 +209,11 @@ With `AudioClockMapper` re-mapping the device clock, beat timing error is:
   jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum before
   it is heard, so no mapper change can move it).
 
-These numbers are unchanged. p95 ≤ 1 ms and max ≤ 3 ms are enforced in CI (test/drift.test.ts). The
-at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked automatically:
-neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI. ASTRID-Rhythm's
-sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and non-blocking.
+These numbers are unchanged. p95 ≤ 1 ms and max ≤ 3 ms are enforced for clock drift in test/drift.test.ts, which
+runs in CI. The at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked
+automatically: neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI.
+ASTRID-Rhythm's sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and
+non-blocking.
 
 A reverted excursion (a blip: a confirmed step whose readings come back within `stepRevertMs`) is not a real device
 clock event and does not claim the one-beat allowance. Beats off during a blip count against the normal limit of at

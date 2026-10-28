@@ -109,13 +109,13 @@ A confirmed step is provisional for `stepRevertMs` (200 ms of audio clock time).
 anchor from before it within that window (within `stepThresholdMs`, confirmed by the same `stepConfirmations`
 readings), it was a transient, not a device clock step: the mapper restores that anchor and all its samples exactly,
 `reanchors` goes back down (`reverts` counts the revert), and `onStep` fires with `revert: true` and the
-`stepSeconds` that move everything back. Handle it like any step (repost, or `retimeForStep`); the steps of one
-window always add up to zero. Further steps inside an open window don't extend it, so a real step that stays is
+`stepSeconds` that move everything back. Handle it like any step (repost, or `retimeForStep`); the offset returns
+exactly to the pre-step anchor. Further steps inside an open window don't extend it, so a real step that stays is
 final 200 ms after it was confirmed, and a step that comes back after that is a second real step. Why provisional
 rather than waiting to see whether the readings trend back: waiting would push every real step's confirmation from
 ~20 ms to ~200 ms, and a ~10 ms buffer step chased that slowly is what made the 150 ms clock-link window lose ~10 ms
 beats. Timing guarantee (unchanged, README "Timing guarantee"): re-mapped p95 ≤ 1 ms, max ≤ 3 ms, and at most 1 beat
-over 3 ms per 10 minutes per tab. p95 ≤ 1 ms and max ≤ 3 ms are enforced in CI (test/drift.test.ts). The
+over 3 ms per 10 minutes per tab. p95 ≤ 1 ms and max ≤ 3 ms are enforced for clock drift in test/drift.test.ts, which runs in CI. The
 at-most-1-beat-over-3-ms-per-10-minutes-per-tab limit is part of the guarantee but isn't yet checked automatically:
 neither this repo nor the Bass, Rhythm or Synth apps gate a 10-minute session on it in CI. ASTRID-Rhythm's
 sync:measure counts beats over 3 ms against this allowance, but its CI run is 2 minutes and non-blocking. A reverted
