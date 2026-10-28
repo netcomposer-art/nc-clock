@@ -3,6 +3,51 @@
 All notable changes to nc-clock are listed here. This project follows [Semantic Versioning](https://semver.org/).
 The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/nc-sync-v1.md.
 
+## [0.3.0] - Unreleased
+
+Device clock step handling and a correct first reading for `AudioClockMapper`. **Breaking:** `ready` no longer
+takes a sample (see Changed and the migration note).
+
+### Changed
+- Documented the timing guarantee (README, "Timing guarantee"): after re-mapping, beat error p95 ≤ 1 ms and
+  max ≤ 3 ms, with at most 1 beat over 3 ms per 10 minutes per tab (the one beat a real device clock jump can slip
+  when it hits audio already in the device buffer).
+- **Breaking:** `AudioClockMapper.ready` is now a pure getter: reading it never takes a sample. The sampling it
+  did moved to a new method, `sampleIfNotReady(): boolean`, which takes one sample while not ready (only when the
+  output timestamp is new) and returns `ready`.
+
+  Migration: code that polled `mapper.ready` to make progress (a ticker that waits for `ready` before scheduling)
+  must call `mapper.sampleIfNotReady()` instead. Code that only reads `ready` is unchanged. The bundled metronome
+  example is switched over. From ASTRID (Astrid, NetComposer-Synth PR #47).
+- The 500 ms wait before the `currentTime − outputLatency` fallback now restarts after every real reading.
+  Before, it was cleared only on a device or state change, so a later run of zero or placeholder stamps fell back
+  at once.
+
+
+### Added
+- Device clock step handling in `AudioClockMapper`. A dropped or repeated output buffer moves the AudioContext clock
+  against wall time by a whole buffer (~10 ms); the 9-sample median took 1–2 s to follow it. The mapper now
+  re-anchors on a confirmed step. Options: `stepThresholdMs` (2, `0` = off), `stepConfirmations` (3) and
+  `stepCheckMs` (50). New: `checkStep()`, `onStep(listener)` and `reanchors`. Zero output timestamps never count.
+- `retimeForStep(when, step, renderedUntil)` and the `ClockStep` type, for schedulers that queue events ahead.
+- Faster step confirmation: new option `stepConfirmMs` (10). Once a reading looks stepped, the confirming readings
+  are taken that far apart instead of on the next periodic checks, so a step is confirmed ~20 ms after it is first
+  seen instead of 100–150 ms. Each confirming reading must come from a new output timestamp (the same stamp read
+  twice no longer counts twice), and placeholder stamps never count towards a step. `stepConfirmMs: 0` restores
+  confirmation on the periodic checks. From ASTRID Rhythm (Petra).
+- `examples/metronome` re-times queued clicks on a confirmed step (cancel and re-create every click not yet
+  rendered), as the docs describe for queued schedulers.
+- docs/nc-clock.md: "Device clock steps". Approach and constants from OLIVE Bass `clock-link` (Olive); patch by
+  Petra (ASTRID Rhythm). Not a wire change.
+
+### Fixed
+- A follower's first note on join was sometimes 10–20 ms late. Right after a context starts, Chrome's
+  `getOutputTimestamp()` gives placeholders (`contextTime` ~0.00002 s while `performanceTime` runs on, reading ~20
+  then ~10 ms late), and a fresh `AudioClockMapper` took the first one as its offset. Stamps with `contextTime`
+  below 3 ms are now ignored, `ready` needs three samples from distinct real stamps, and with the timestamp API but
+  nothing real for 500 ms the mapper falls back to `currentTime − outputLatency`. From ASTRID (Astrid,
+  NetComposer-Synth PR #47).
+
 ## [0.2.0] - 2026-10-27
 
 Session swing over NC Sync, based on a contributed patch.

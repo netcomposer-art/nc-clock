@@ -1,6 +1,6 @@
 // A minimal NC Sync peer: joins the "nc-sync" channel and ticks a metronome on the shared beat.
 // nc-clock was created by Peter Semmelhack (https://psem.me/).
-import { NcClock, NcSyncPeer, AudioClockMapper, createTicker, sharedNow } from '../../dist/index.js';
+import { NcClock, NcSyncPeer, AudioClockMapper, createTicker, sharedNow, retimeForStep } from '../../dist/index.js';
 
 const LOOKAHEAD = 0.15; // seconds of audio scheduled ahead
 const $ = id => document.getElementById(id);
@@ -8,6 +8,8 @@ const $ = id => document.getElementById(id);
 const ctx = new AudioContext();
 const clock = new NcClock({ bpm: 120, timebase: 'shared' }); // times are shared seconds (same in every tab)
 const mapper = new AudioClockMapper(ctx);                    // shared time <-> this tab's audio time
+// Clicks handed to the audio graph and not yet played, so a confirmed device clock step can move them.
+const queued = [];
 const peer = new NcSyncPeer({
   app: 'nc-clock metronome', version: '0.1.0', clock,
   audio: () => (ctx.state === 'running' ? 'running' : 'needs-gesture'),
@@ -30,16 +32,35 @@ function click(when, accent) {
   gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
   osc.connect(gain).connect(ctx.destination);
   osc.start(when); osc.stop(when + 0.06);
+  queued.push({ osc, when, accent });
 }
+
+// A confirmed device clock step: every click not yet rendered moves by the step (cancel and re-create, since a
+// started source cannot be moved), so it lands on the shared grid. See docs/nc-clock.md, "Device clock steps".
+mapper.onStep(step => {
+  const renderedUntil = ctx.currentTime + 128 / ctx.sampleRate;
+  const moving = [];
+  for (let i = queued.length - 1; i >= 0; i--) {
+    const q = queued[i];
+    if (q.when + 0.06 < ctx.currentTime) { queued.splice(i, 1); continue; }
+    const when = retimeForStep(q.when, step, renderedUntil);
+    if (when === q.when) continue;
+    q.osc.stop(0); q.osc.disconnect(); queued.splice(i, 1);
+    moving.push({ ...q, when });
+  }
+  for (const q of moving) click(q.when, q.accent);
+});
 
 createTicker(() => {
   const t = clock.transport;
-  if (!t.running || !mapper.ready || ctx.state !== 'running') return;
+  // ready is a plain read; sampleIfNotReady() takes a sample from each new output timestamp until it is true.
+  if (!t.running || !mapper.sampleIfNotReady() || ctx.state !== 'running') return;
   const now = mapper.toSharedTime(ctx.currentTime);
   if (t.timeAt(nextBeat) < now - 0.1) resync();             // after a stall, skip ahead instead of a burst
   while (t.timeAt(nextBeat) < now + LOOKAHEAD) {
     const when = mapper.toContextTime(t.timeAt(nextBeat));
     if (when >= ctx.currentTime) click(when, t.position(nextBeat).beatInBar === 0);
+    while (queued.length && queued[0].when + 0.06 < ctx.currentTime) queued.shift();
     nextBeat += 1;
   }
 }).start();

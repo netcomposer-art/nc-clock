@@ -136,7 +136,8 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 
 | Export | What it does |
 |---|---|
-| `new AudioClockMapper(ctx, { samples?, intervalMs?, userOffsetMs? })` | Maps shared time ↔ AudioContext time using `getOutputTimestamp()` and `outputLatency`, a median of recent samples, guards for suspended/zero readings, and a re-read when the output device changes. `start()`, `stop()`, `toContextTime(shared)`, `toSharedTime(ctxTime)`, `offset`, `ready`, `outputLatencyMs`. |
+| `new AudioClockMapper(ctx, { samples?, intervalMs?, userOffsetMs?, stepThresholdMs?, stepConfirmations?, stepCheckMs?, stepConfirmMs? })` | Maps shared time ↔ AudioContext time using `getOutputTimestamp()` and `outputLatency`, a median of recent samples, guards for suspended, zero and placeholder readings, and a re-read when the output device changes. Re-anchors at once on a confirmed device clock step. `start()`, `stop()`, `toContextTime(shared)`, `toSharedTime(ctxTime)`, `offset`, `ready` (a plain read: true after three real samples), `sampleIfNotReady()` (takes a sample while not ready; returns `ready`), `onStep(fn)`, `checkStep()`, `reanchors`, `outputLatencyMs`. See docs/nc-clock.md. |
+| `retimeForStep(when, step, renderedUntil)` | Moves a queued context-time event by a confirmed step if it is not yet rendered. |
 | `createTicker(onTick, { intervalMs?, worker? })` | A ~20 ms tick from a Worker timer (not throttled in hidden tabs) plus a main-thread fallback, de-duplicated. `start()`, `stop()`, `dispose()`, `kind`. |
 | `sharedNow()` | Shared time: `(performance.timeOrigin + performance.now()) / 1000`. |
 | `new NcSyncPeer({ app, version, clock, capabilities?, channel?, locks?, … })` | An NC Sync v1 participant. `start()`, `stop()`, `isLeader`, `peers`, `onRole(fn)`, `onPeers(fn)`, `onSnapshot(fn)`, `onMessage(fn)`, `sendSnapshot(op, slot, extra?)`, `tempoRange()`. Swing: pass `swing: () => value` (0.5 straight to 0.75) to send yours while leading; read the session's with `swing` (null until a leader sets one) and `onSwing(fn)`; call `publishState()` after a swing edit (leader only; returns false on a follower). |
@@ -196,6 +197,17 @@ Every message carries the envelope:
 drop repeats of (`from`, `seq`), never re-broadcast.
 
 ---
+
+## Timing guarantee
+
+With `AudioClockMapper` re-mapping the device clock, beat timing error is:
+
+- **p95 ≤ 1 ms** and **max ≤ 3 ms** after re-mapping.
+- **At most 1 beat over 3 ms per 10 minutes per tab.** That one beat is the one that can slip when a real device
+  clock jump lands on audio already in the device's output buffer (computed ~outputLatency + one render quantum
+  before it is heard, so no mapper change can move it). The error is one-off and never larger than the jump.
+
+These limits are the CI gate.
 
 ## Browser support and limits
 
