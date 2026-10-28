@@ -77,14 +77,15 @@ export interface ByeMessage extends Envelope { type: 'bye' }
 export interface HeartbeatMessage extends Envelope { type: 'heartbeat'; app: string; leader: boolean; audio: AudioReadiness; hidden: boolean; outputLatencyMs: number | null; joinedAt: number; capabilities: Capabilities;
   /** `independentStop` peers only: this instrument is playing. Sent at once when it changes, not only every second. */
   playing?: boolean;
-  /** A session swing edit from a peer that does not lead (`publishState()`): the leader applies it, and every peer
-   *  keeps it until a `state` carries it, so a new leader applies it if the lead moved first. */
+  /** A session swing edit from a peer that led the running session and no longer leads (`publishState()`): the
+   *  leader applies it, and every peer keeps it until a `state` carries it, so a new leader applies it if the lead
+   *  moved first. Ignored from a peer that did not lead the running session. */
   swing?: number }
 /** Leader only: the full clock. Followers apply it as is. */
 export interface StateMessage extends Envelope {
   type: 'state'; clock: ClockSnapshot;
   /** Where the second 16th of each 8th-note pair lands, as a fraction of the pair: 0.5 straight to 0.75 dotted.
-   * 0 means the leader does not set swing (what nc-clock 0.1.0 always sent). See {@link readSwing}. */
+   * The leader's own, or the session swing it keeps; 0 when it has none. See {@link readSwing}. */
   swing: number;
   leaderApp: string; stopAll?: boolean;
   /** Set by an `independentStop` leader: a plain transport stop here is a session end after the last instrument
@@ -116,7 +117,7 @@ export const MESSAGE_TYPES = ['hello', 'bye', 'heartbeat', 'state', 'transport',
 /** Body of a message: everything except the envelope. */
 export type MessageBody<M extends NcSyncMessage> = Omit<M, keyof Envelope> & { type: M['type'] };
 
-/** `state.swing` value meaning "this leader does not set swing" (nc-clock 0.1.0 always sent it). */
+/** `state.swing` value meaning "this leader has no session swing" (its app sets none and it keeps none). */
 export const SWING_UNSET = 0;
 /** `state.swing` for straight 16ths. */
 export const SWING_STRAIGHT = 0.5;

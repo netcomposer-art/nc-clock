@@ -57,7 +57,7 @@ newcomer learns who is present.
 Every ~1 s: `app`, `leader` (bool), `audio`, `hidden` (bool), `outputLatencyMs`, `joinedAt`, `capabilities`, and
 `playing` (bool) with `independentStop`. A peer with `independentStop` also sends a heartbeat at once when its
 `playing` changes.
-A follower playing in a running session MAY add `swing` (number) to send a session swing edit to the leader; see [Swing](#swing).
+A peer that led the running session and no longer leads MAY add `swing` (number) to send a session swing edit to the leader; see [Swing](#swing).
 A peer that knows no other peer MAY stop beating while alone, until one appears (nobody is listening; every peer
 still answers a `hello` with a heartbeat, so a newcomer learns who is there). Such a peer SHOULD send one heartbeat
 when its page is shown again (it may have missed a `hello` while frozen in the background).
@@ -73,7 +73,7 @@ The whole clock. Followers MUST apply it as is.
 | Field | Type | |
 |---|---|---|
 | `clock` | ClockSnapshot | Section 5. |
-| `swing` | number | Session swing, or `0` for unset. See [Swing](#swing). |
+| `swing` | number | Session swing (the leader's own, or the one it keeps), or `0` when it has none. See [Swing](#swing). |
 | `leaderApp` | string | Leader's app name. |
 | `stopAll` | boolean, optional | With a stop: also stop free-running arps/sequences (see `transport`). |
 | `independentStop` | boolean, optional | The leader runs per-instrument Stop ([Member play state](#member-play-state-independentstop)). |
@@ -92,17 +92,21 @@ answer one with a message.
 is triplet feel, `0.75` (the maximum in v1) is dotted. It applies to 16ths counted from the anchor's beat grid;
 peers with the `swing` capability play it, others ignore it.
 
-- `0` means "this leader does not set swing". nc-clock 0.1.0 always sent `0`, so old leaders stay compatible.
+- `0` means "this leader has no session swing": its app sets none and it keeps none. A leader whose app sets no
+  swing still sends the session swing it keeps (from an edit, or carried over a handoff), never `0` over it.
 - A receiver MUST ignore any value outside 0.5–0.75 (including `0`, non-numbers and NaN) and keep the swing it
   had. It MUST still apply the rest of the `state`.
-- A leader SHOULD send its current swing in every `state` and SHOULD send `state` promptly when swing changes.
+- A leader SHOULD send the session swing (its own, or the one it keeps) in every `state` and SHOULD send `state`
+  promptly when swing changes.
   It MUST clamp its own value to 0.5–0.75, or send `0`.
 - Swing is not part of the clock snapshot (section 5): the snapshot says when beats happen; swing is how a
   pattern sits on them. Adding it later would be a minor snapshot version (1.x), which v1 readers accept.
-- A peer that does not lead MAY send a swing edit as `heartbeat.swing` (0.5–0.75), but only while it plays in a
-  running session; a peer that has not joined, or has stopped, MUST NOT send one (its own swing stays local, so it
-  cannot replace the session swing). Receivers MUST ignore one while no session runs, or from a peer whose
-  heartbeat has `playing: false`. The leader SHOULD apply it and
+- A peer that does not lead MAY send a swing edit as `heartbeat.swing` (0.5–0.75), but only if it led the running
+  session (an ex-leader, playing or stopped); a peer that has not led it (not joined, or a follower that never led,
+  even while it plays) MUST NOT send one: its own swing stays local, so it cannot replace the session swing.
+  Receivers MUST ignore one while no session runs, or from a peer they have not seen lead the running session (it
+  sent a `state` while that session ran). Who led resets when the session ends: a `state` with the transport not
+  running clears it, so a leader of an earlier session does not edit the next one. The leader SHOULD apply it and
   send `state` with it. Every peer SHOULD keep the latest such edit until a `state` carries that value (or a
   `state` sent more than 0.25 s after the edit), and a new leader SHOULD send a kept edit, so an edit made during a
   handoff is not lost.

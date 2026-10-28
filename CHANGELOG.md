@@ -8,12 +8,14 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 Stacked on 0.5.0 (#6).
 
 ### Changed
-- `publishState()` on a follower forwards a swing edit (`heartbeat.swing`) only while that instrument plays in the
-  running session. A follower that has not joined, or has stopped (an ex-leader included), returns `false` and sends
-  nothing, so its own swing cannot replace the session swing. A leader is unchanged.
-- Receivers (the leader included) ignore a `heartbeat.swing` while no session runs, or from a peer whose heartbeat
-  says `playing: false`, so an older or misbehaving sender cannot replace the session swing either. From ASTRID-Rhythm
+- `publishState()` on a follower forwards a swing edit (`heartbeat.swing`) only if that peer led the running session
+  (an ex-leader, playing or stopped). A follower that never led it (not joined, or playing) returns `false` and
+  sends nothing, so its own swing cannot replace the session swing. A leader is unchanged. From ASTRID-Rhythm
   (swing-join:310, psemmelhack/ASTRID-Rhythm#32): an unjoined tab's swing edit replaced the session swing.
+- Receivers (the leader included) ignore a `heartbeat.swing` while no session runs, or from a peer they have not
+  seen lead the running session (send `state` while it ran). Who led resets when the session ends.
+- A leader with no `swing` option (ASTRID-like) sends the session swing it keeps (an ex-leader's edit, or carried
+  over a handoff), not 0. The spec now says so: `state.swing` is `0` only when the leader has no session swing.
 
 ## [0.5.0] - Unreleased
 
