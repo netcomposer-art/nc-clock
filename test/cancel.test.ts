@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { NcClock } from '../src/core/index.js';
 import { NcSyncPeer, type ChannelLike } from '../src/peer.js';
 import { ANY_SLOT, cancelsRecall, envelope, parseMessage, type NcSyncMessage, type SnapshotMessage } from '../src/protocol.js';
+import { NcSyncPeer as NcSyncPeer030 } from './fixtures/nc-clock-f509605/peer.js';
+import { parseMessage as parseMessage030 } from './fixtures/nc-clock-f509605/protocol.js';
 
 /** In-memory BroadcastChannel: delivers to every other member, asynchronously, in order. */
 function hub() {
@@ -73,21 +75,50 @@ test('cancel: encoding — sendCancel sends op "cancel" with ANY_SLOT, or a slot
   for (const m of sent) assert.deepEqual(parseMessage(m), m, 'round-trips through the validator');
 });
 
-test('cancel: validator accepts cancel, rejects a non-numeric recallSeq or a missing slot', () => {
-  assert.ok(parseMessage(snap({ op: 'cancel', slot: ANY_SLOT })));
-  assert.ok(parseMessage(snap({ op: 'cancel', slot: 3, recallSeq: 7 })));
-  assert.equal(parseMessage({ ...snap({ op: 'cancel' }), recallSeq: 'x' }), null);
-  assert.equal(parseMessage({ ...snap({ op: 'cancel' }), slot: undefined }), null);
-  assert.equal(parseMessage(snap({ op: 'shuffle' as never })), null, 'other unknown ops are still dropped');
+test('cancel: validator accepts cancel; rejects bad recallSeq, bad slots and unknown ops', () => {
+  assert.ok(parseMessage(snap({ op: 'cancel', slot: ANY_SLOT }, 'a', 2)));
+  assert.ok(parseMessage(snap({ op: 'cancel', slot: 3, recallSeq: 7 }, 'a', 8)));
+  const bad: [string, Record<string, unknown>][] = [
+    ['non-numeric recallSeq', { op: 'cancel', slot: ANY_SLOT, recallSeq: 'x' }],
+    ['null recallSeq', { op: 'cancel', slot: ANY_SLOT, recallSeq: null }],
+    ['fractional recallSeq', { op: 'cancel', slot: ANY_SLOT, recallSeq: 5.5 }],
+    ['recallSeq 0', { op: 'cancel', slot: ANY_SLOT, recallSeq: 0 }],
+    ['negative recallSeq', { op: 'cancel', slot: ANY_SLOT, recallSeq: -3 }],
+    ['recallSeq = own seq', { op: 'cancel', slot: ANY_SLOT, recallSeq: 8 }],
+    ['recallSeq beyond own seq', { op: 'cancel', slot: ANY_SLOT, recallSeq: 999 }],
+    ['missing slot', { op: 'cancel', slot: undefined }],
+    ['fractional cancel slot', { op: 'cancel', slot: 1.5 }],
+    ['cancel slot -2', { op: 'cancel', slot: -2 }],
+    ['recall slot -1', { op: 'recall', slot: -1 }],
+    ['recall slot 2.5', { op: 'recall', slot: 2.5 }],
+    ['unknown op', { op: 'shuffle', slot: 1 }],
+  ];
+  for (const [why, body] of bad) assert.equal(parseMessage({ ...snap({}, 'a', 8), ...body }), null, why);
+  assert.ok(parseMessage(snap({ op: 'recall', slot: 1, recallSeq: 3 } as never, 'a', 8)), 'recallSeq on a recall is an ignored field');
 });
 
-test('cancel: receivers from nc-clock 0.3.0 drop it (unknown op), so it is safe to send to older peers', () => {
-  // The 0.3.0 snapshot check, verbatim from src/protocol.ts at f509605.
-  const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
-  const v030 = (m: Record<string, unknown>) => (m.op === 'recall' || m.op === 'stopSequence' || m.op === 'store') && num(m.slot);
-  assert.equal(v030(snap({ op: 'cancel', slot: ANY_SLOT }) as never), false);
-  assert.equal(v030(snap({ op: 'cancel', slot: 2, recallSeq: 4 }) as never), false);
-  assert.equal(v030(snap({ op: 'recall', slot: 2 }) as never), true, 'control');
+test('cancel: sender misuse throws — cancel or recallSeq through sendSnapshot, bad slots or recallSeq in sendCancel', async t => {
+  const s = await session(t);
+  const p = s.lead.peer as unknown as { sendSnapshot(op: string, slot: number, extra?: object): number };
+  assert.throws(() => p.sendSnapshot('cancel', 2), TypeError);
+  assert.throws(() => p.sendSnapshot('recall', 2, { recallSeq: 1 }), TypeError);
+  assert.throws(() => p.sendSnapshot('recall', -1), TypeError);
+  assert.throws(() => p.sendSnapshot('recall', 1.5), TypeError);
+  const seq = s.lead.peer.sendSnapshot('recall', 2, { atBeat: 4 });
+  assert.throws(() => s.lead.peer.sendCancel({ slot: -2 }), TypeError);
+  assert.throws(() => s.lead.peer.sendCancel({ slot: 0.5 }), TypeError);
+  assert.throws(() => s.lead.peer.sendCancel({ recallSeq: seq + 1 }), TypeError, 'not sent yet');
+  assert.throws(() => s.lead.peer.sendCancel({ recallSeq: 1.5 }), TypeError);
+  const before = s.h.log.length;
+  assert.equal(s.lead.peer.sendCancel({ recallSeq: 0 }), 0, 'recallSeq 0: the recall was never sent, nothing to withdraw');
+  assert.equal(s.h.log.length, before, 'nothing sent by a rejected or empty cancel');
+});
+
+test('cancel: before start() sendSnapshot and sendCancel send nothing and return 0', () => {
+  const p = new NcSyncPeer({ app: 'x', version: '0', clock: new NcClock({ bpm: 120 }), channel: hub().channel(), locks: null, instanceId: 'x' });
+  assert.equal(p.sendSnapshot('recall', 1), 0);
+  assert.equal(p.sendCancel(), 0);
+  assert.equal(p.sendCancel({ recallSeq: 0 }), 0);
 });
 
 // ---- matching rule ----------------------------------------------------------------------------
@@ -103,6 +134,8 @@ test('cancelsRecall: same sender, later seq, slot match or ANY_SLOT, recallSeq a
   assert.equal(cancelsRecall(snap({ op: 'cancel', slot: ANY_SLOT }, 'a', 4), r), false, 'sent before the recall');
   assert.equal(cancelsRecall(snap({ op: 'recall', slot: 2 }, 'a', 6), r), false, 'not a cancel');
   assert.equal(cancelsRecall(snap({ op: 'cancel', slot: ANY_SLOT }, 'a', 6), snap({ op: 'store', slot: 2 }, 'a', 5)), false, 'not a recall');
+  assert.equal(cancelsRecall(snap({ op: 'cancel', slot: ANY_SLOT, recallSeq: 6 }, 'a', 6), r), false, 'recallSeq not below its own seq');
+  assert.equal(cancelsRecall(snap({ op: 'cancel', slot: ANY_SLOT }, 'a', 6), snap({ op: 'recall', slot: 2 }, 'a', 5)), true, 'a recall without atBeat (held to the next bar) too');
 });
 
 // ---- two peers --------------------------------------------------------------------------------
@@ -161,4 +194,107 @@ test('two peers, a cancel then a new recall: the new recall still switches; a re
   s.f.held = other;
   (s.fol.peer as unknown as { receive(d: unknown): void }).receive(snap({ op: 'cancel', slot: ANY_SLOT }, 'drums', 999));
   assert.equal(s.f.held, other);
+});
+
+// ---- hand-delivered channel: reordering, duplicates, leader change, restarts, a real 0.3.0 receiver ----------------
+
+/** A channel whose messages wait in each member's inbox until the test delivers them, in any order, any number of times. */
+function manualHub() {
+  const members = new Map<ChannelLike, unknown[]>();
+  return {
+    channel(): ChannelLike {
+      const ch: ChannelLike = { onmessage: null, postMessage(d: unknown) { const c = JSON.parse(JSON.stringify(d)); for (const [m, box] of members) if (m !== ch) box.push(c); }, close() { members.delete(ch); } };
+      members.set(ch, []);
+      return ch;
+    },
+    inbox(ch: ChannelLike) { return members.get(ch)!; },
+    deliver(ch: ChannelLike, msgs: unknown[]) { for (const d of msgs) ch.onmessage?.({ data: d }); },
+    drainAll() { for (let k = 0; k < 10; k++) { let any = false; for (const [ch, box] of members) if (box.length) { any = true; this.deliver(ch, box.splice(0)); } if (!any) break; } },
+  };
+}
+type AnyPeerClass = typeof NcSyncPeer | typeof NcSyncPeer030;
+const tick = () => new Promise(r => setTimeout(r, 5));
+function manualPeer(Cls: AnyPeerClass, h: ReturnType<typeof manualHub>, app: string, now: { t: number }, prefersLeader = false) {
+  const ch = h.channel();
+  const peer = new Cls({ app, version: '0', clock: new NcClock({ bpm: 120, timebase: 'shared' }), channel: ch, locks: null,
+    now: () => now.t, heartbeatMs: 3_600_000, joinGraceMs: 0, capabilities: { prefersLeader }, instanceId: app }) as NcSyncPeer;
+  return { ch, peer };
+}
+async function settle(h: ReturnType<typeof manualHub>) { for (let i = 0; i < 3; i++) { await tick(); h.drainAll(); } }
+/** Leader (this version) and a follower built from `Cls`, both started and settled. */
+async function manualPair(t: { after(fn: () => void): void }, Cls: AnyPeerClass = NcSyncPeer) {
+  const h = manualHub(), now = { t: 1000 };
+  const L = manualPeer(NcSyncPeer, h, 'lead', now, true), F = manualPeer(Cls, h, 'fol', now);
+  await L.peer.start(); await F.peer.start(); await settle(h);
+  t.after(() => { L.peer.stop(); F.peer.stop(); });
+  return { h, now, L, F, f: follower(F.peer) };
+}
+
+test('reordered: a cancel delivered before its recall still wins (the late recall is dropped by seq dedupe)', async t => {
+  const s = await manualPair(t); const box = s.h.inbox(s.F.ch); box.length = 0;
+  const rs = s.L.peer.sendSnapshot('recall', 2, { atBeat: 4 }); s.L.peer.sendCancel({ slot: 2, recallSeq: rs });
+  const [rec, can] = box.splice(0);
+  s.h.deliver(s.F.ch, [can, rec]); s.f.due(4);
+  assert.deepEqual(s.f.switches, []); assert.equal(s.f.held, null);
+});
+
+test('duplicates: recall and cancel delivered several times are each applied once; no switch', async t => {
+  const s = await manualPair(t); const box = s.h.inbox(s.F.ch); box.length = 0;
+  const seen: string[] = []; s.F.peer.onSnapshot(m => seen.push(`${m.op}#${m.seq}`));
+  const rs = s.L.peer.sendSnapshot('recall', 2, { atBeat: 4 }); s.L.peer.sendCancel({ recallSeq: rs });
+  const [rec, can] = box.splice(0);
+  s.h.deliver(s.F.ch, [rec, rec, can, can, rec]); s.f.due(4);
+  assert.deepEqual(seen, [`recall#${rs}`, `cancel#${rs + 1}`]); assert.deepEqual(s.f.switches, []);
+});
+
+test('leader change between recall and cancel: the ex-leader\'s cancel still withdraws its own recall (matched on from, not term)', async t => {
+  const h = manualHub(), now = { t: 1000 };
+  const L = manualPeer(NcSyncPeer, h, 'm-old', now), F = manualPeer(NcSyncPeer, h, 'z-fol', now);
+  await L.peer.start(); await F.peer.start(); await settle(h);
+  const f = follower(F.peer);
+  assert.equal(L.peer.isLeader, true);
+  const rs = L.peer.sendSnapshot('recall', 3, { atBeat: 8 }); h.drainAll();
+  const N = manualPeer(NcSyncPeer, h, 'a-new', now, true); await N.peer.start(); await settle(h);
+  t.after(() => { L.peer.stop(); F.peer.stop(); N.peer.stop(); });
+  assert.deepEqual([L.peer.isLeader, N.peer.isLeader], [false, true], 'the lead moved to the newcomer');
+  L.peer.sendCancel({ slot: 3, recallSeq: rs }); h.drainAll(); f.due(8);
+  assert.deepEqual(f.switches, []);
+});
+
+test('sender stop()/start() on the same object keeps seq counting, so its cancel still matches', async t => {
+  const s = await manualPair(t);
+  const rs = s.L.peer.sendSnapshot('recall', 2, { atBeat: 4 }); s.h.drainAll();
+  s.L.peer.stop(); s.h.drainAll(); await s.L.peer.start(); await settle(s.h);
+  const cs = s.L.peer.sendCancel({ recallSeq: rs }); s.h.drainAll(); s.f.due(4);
+  assert.ok(cs > rs); assert.deepEqual(s.f.switches, []);
+});
+
+test('pinned instanceId reused by a new peer object (documented hazard): seq restarts, the cancel is dropped as a repeat', async t => {
+  const s = await manualPair(t);
+  s.L.peer.sendSnapshot('recall', 2, { atBeat: 4 }); s.L.peer.sendSnapshot('recall', 2, { atBeat: 4 }); s.h.drainAll();
+  const L2 = manualPeer(NcSyncPeer, s.h, 'lead', s.now); await L2.peer.start(); s.h.drainAll();
+  t.after(() => L2.peer.stop());
+  L2.peer.sendCancel(); s.h.drainAll(); s.f.due(4);
+  assert.deepEqual(s.f.switches, [2], 'why the instanceId option says never to reuse a pinned id');
+});
+
+test('sender leaves (bye) with a recall held: no implicit cancel, the receiver keeps it (spec: kept)', async t => {
+  const s = await manualPair(t);
+  s.L.peer.sendSnapshot('recall', 2, { atBeat: 4 }); s.h.drainAll();
+  s.L.peer.stop(); s.h.drainAll(); s.f.due(4);
+  assert.deepEqual(s.f.switches, [2]);
+});
+
+test('a real nc-clock 0.3.0 (f509605) receiver drops cancel: listeners never see it, later recalls still arrive, it still switches', async t => {
+  assert.equal(parseMessage030(snap({ op: 'cancel', slot: ANY_SLOT, recallSeq: 1 }, 'a', 2)), null);
+  assert.ok(parseMessage030(snap({ op: 'recall', slot: 2 }, 'a', 2)), 'control');
+  const s = await manualPair(t, NcSyncPeer030);
+  const seen: string[] = [], all: string[] = [];
+  s.F.peer.onSnapshot(m => seen.push(`${m.op}#${m.seq}`));
+  s.F.peer.onMessage(m => { if (m.type === 'snapshot') all.push(`${m.op}#${m.seq}`); });
+  const rs = s.L.peer.sendSnapshot('recall', 2, { atBeat: 4 }); s.L.peer.sendCancel({ slot: 2, recallSeq: rs }); s.h.drainAll();
+  s.f.due(4);
+  assert.deepEqual(s.f.switches, [2], 'old behaviour: the bar line still switches');
+  const r2 = s.L.peer.sendSnapshot('recall', 4, { atBeat: 8 }); s.h.drainAll();
+  assert.deepEqual(seen, [`recall#${rs}`, `recall#${r2}`]); assert.deepEqual(all, seen);
 });
