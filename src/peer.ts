@@ -169,6 +169,9 @@ export class NcSyncPeer implements ClockAuthority {
   private messageListeners = new Set<Listener<NcSyncMessage>>();
   private swingListeners = new Set<Listener<number>>();
   private appliedSwing: number | null = null;
+  // Peers (this one included) that led the running session: only they edit its swing as non-leaders. Cleared by any
+  // `state` that is not running (the session ended), so a new session starts with only its own leaders.
+  private readonly led = new Set<string>();
 
   /** Create a peer (not joined until {@link start}). */
   constructor(options: NcSyncPeerOptions) {
@@ -255,17 +258,15 @@ export class NcSyncPeer implements ClockAuthority {
   /** The session swing (0.5 to 0.75) from the latest `state` that set one, or null if no leader has set swing yet. */
   get swing(): number | null { return this.appliedSwing; }
   /**
-   * After a swing edit: the leader sends `state` again now; a follower that plays in the running session sends its
-   * swing to the leader as a session edit (in a `heartbeat`), so the edit reaches the session whoever leads.
-   * Returns false when not joined, and on a follower that is not playing in a running session (nothing is sent:
-   * its swing stays local) or has no swing.
+   * After a swing edit: the leader sends `state` again now; a follower that led the running session (an ex-leader,
+   * playing or stopped) sends its swing to the leader as a session edit (in a `heartbeat`), so the edit reaches the
+   * session whoever leads. Returns false when not joined, and on a follower that has not led the running session
+   * (nothing is sent: its swing stays local) or has no swing.
    */
   publishState(): boolean {
     if (!this.channel) return false;
     if (this.leader) { this.carriedSwing = this.editSwing = null; this.broadcastState(); return true; }
-    // Only a follower playing in the running session edits the session swing (an unjoined or stopped tab's own
-    // swing must not replace it).
-    const swing = this.clock.playing && this.clock.transport.running ? readSwing(this.o.swing()) : null;
+    const swing = this.ledRunning(this.id) ? readSwing(this.o.swing()) : null;
     if (swing === null) return false;
     this.editSwing = swing; this.editAt = this.o.now();
     this.sendHeartbeat(swing);
@@ -395,8 +396,11 @@ export class NcSyncPeer implements ClockAuthority {
     const swing = this.editSwing ?? this.carriedSwing ?? (Number.isFinite(own) ? Math.min(SWING_MAX, Math.max(SWING_STRAIGHT, own as number)) : SWING_UNSET);
     this.send({ type: 'state', clock: this.clock.toSnapshot(), swing, leaderApp: this.o.app,
       independentStop: this.indep || undefined, stopAll, endSession });
+    this.noteLed(this.id);
     this.noteSwing(swing); // after sending, so a listener that republishes cannot reorder states
   }
+  private noteLed(id: string): void { if (this.clock.transport.running) this.led.add(id); else this.led.clear(); }
+  private ledRunning(id: string): boolean { return this.clock.transport.running && this.led.has(id); }
   private noteSwing(value: unknown): void {
     const swing = readSwing(value);
     if (swing === null || swing === this.appliedSwing) return;
@@ -425,8 +429,7 @@ export class NcSyncPeer implements ClockAuthority {
         if (memberChanged) this.emitPeers();
         if (memberChanged && playing === true) this.keepRunForJoin();
         const edit = readSwing((m as HeartbeatMessage).swing); // heartbeat only
-        // Only from a peer playing in the running session (an older peer, with no member state, counts as playing).
-        if (edit !== null && playing !== false && this.clock.transport.running) { this.editSwing = edit; this.editAt = m.sentAt; if (this.leader) this.broadcastState(); }
+        if (edit !== null && this.ledRunning(m.from)) { this.editSwing = edit; this.editAt = m.sentAt; if (this.leader) this.broadcastState(); }
         // Answer a newcomer: the leader with the clock, everyone with a heartbeat (so it knows who is here).
         if (m.type === 'hello') { if (this.leader) this.broadcastState(); this.sendHeartbeat(); }
         this.elect();
@@ -453,6 +456,7 @@ export class NcSyncPeer implements ClockAuthority {
         } else sender.lastSeen = this.o.now();
         const wasRunning = this.clock.transport.running;
         this.clock.applySnapshot(m.clock);
+        this.noteLed(m.from);
         this.noteSwing(m.swing);
         // A pending swing edit is done once a state carries it (or the leader has moved on since).
         if (this.editSwing !== null && (m.swing === this.editSwing || m.sentAt - this.editAt > 0.25)) this.editSwing = null;

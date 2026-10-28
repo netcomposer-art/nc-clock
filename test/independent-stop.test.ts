@@ -347,140 +347,149 @@ for (const locks of [false, true]) {
   });
 }
 
-// ---- Petra on d5d7b86: session swing edits must not depend on who leads ----------------------------------------
-// A follower's Play moves the lead to it (playing first); the stopped ex-leader's later swing edit used to go nowhere
-// (only the leader publishes swing). publishState() on a follower now sends the edit to the leader (in a heartbeat).
+// ---- Session swing edits (Petra on d5d7b86; Zeta, Rhythm #32 review) -------------------------------------------
+// A non-leader edits the session swing only if it led the running session (an ex-leader, playing or stopped):
+// publishState() forwards it in a heartbeat, and every receiver applies a heartbeat.swing only from a peer it saw
+// lead the running session. A tab that never led it (unjoined, or a playing follower) keeps its swing local.
+const swingBeats = (h: ReturnType<typeof hub>, from?: string) =>
+  h.log.filter(m => m.type === 'heartbeat' && (m as { swing?: number }).swing !== undefined && (!from || m.from === from)).length;
+/** Sends `from`'s last heartbeat again on a raw channel, with a swing edit (as a sender without the guard would). */
+function rawSwing(h: ReturnType<typeof hub>, from: string, now: { t: number }, swing: number) {
+  const hb = [...h.log].reverse().find(m => m.type === 'heartbeat' && m.from === from)!;
+  const raw = h.channel();
+  raw.postMessage({ ...hb, seq: hb.seq + 1000 + swingBeats(h), sentAt: now.t, swing });
+  raw.close();
+}
 for (const locks of [false, true]) {
   const sfx = locks ? ' (Web Locks)' : '';
-  test(`a stopped ex-leader's swing edit does not overwrite the session; once it plays again, its edit reaches every peer${sfx}`, async () => {
+  test(`a stopped ex-leader's swing edit reaches every tab, also after the next handoff${sfx}`, async () => {
     const now = { t: 11_000 };
     let swingA = 0.62;
-    const { h, a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null, swingA: () => swingA });
-    const swingBeats = () => h.log.filter(m => m.type === 'heartbeat' && (m as { swing?: number }).swing !== undefined).length;
+    const { a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null, swingA: () => swingA });
     a.clock.play({ at: now.t }); await flush(60);
     now.t += 0.5; b.clock.play({ at: now.t }); await flush(60);
     now.t += 0.5; a.clock.stop({ at: now.t }); await flush(80);
     assert.deepEqual(leaderOf(a, b, c), ['b-bass'], 'the lead moved to the playing tab');
     for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.62);
-    // Stopped (not playing in the running session): its own edit stays local.
     swingA = 0.55;
-    assert.equal(a.peer.publishState(), false, 'a stopped ex-leader does not forward');
+    assert.equal(a.peer.publishState(), true, 'the stopped ex-leader forwards its edit');
     await flush(60);
-    assert.equal(swingBeats(), 0, 'no heartbeat.swing sent');
-    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.62, `${t.peer.id} keeps the session swing`);
-    // Playing again (a Join), its edit is a session edit, kept after the next handoff too.
-    now.t += 1; a.clock.play({ at: now.t }); await flush(60);
-    swingA = 0.58;
-    assert.equal(a.peer.publishState(), true, 'a playing follower forwards its edit');
-    await flush(60);
-    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.58, `${t.peer.id} has the edit`);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.55, `${t.peer.id} has the edit`);
+    now.t += 1; c.clock.play({ at: now.t }); await flush(60);
     now.t += 0.5; b.clock.stop({ at: now.t }); await flush(80);
-    assert.equal(leaderOf(a, b, c).length, 1);
-    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.58, `${t.peer.id} after the next handoff`);
+    assert.deepEqual(leaderOf(a, b, c), ['c-synth']);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.55, `${t.peer.id} after the next handoff`);
     for (const t of [a, b, c]) t.peer.stop();
   });
 
-  test(`an unjoined follower's swing edit is not forwarded (running session, and no session)${sfx}`, async () => {
+  test(`a tab that never led the running session does not forward (unjoined, or playing), and receivers ignore it${sfx}`, async () => {
     const now = { t: 11_200 };
     let swingC = 0.7;
-    const h = hub();
-    const L = locks ? fakeLocks() : null;
-    const a = tab(h, 'a-rhythm', now, { locks: L, swing: () => 0.62 }); await a.peer.start(); await flush();
-    now.t += 1;
+    const h = hub(), L = locks ? fakeLocks() : null;
+    const a = tab(h, 'a-rhythm', now, { locks: L, swing: () => 0.62 }); await a.peer.start(); await flush(); now.t += 1;
+    const b = tab(h, 'b-bass', now, { locks: L }); await b.peer.start(); await flush(); now.t += 1;
     const c = tab(h, 'c-synth', now, { locks: L, swing: () => swingC }); await c.peer.start(); await flush(60);
-    const swingBeats = () => h.log.filter(m => m.type === 'heartbeat' && (m as { swing?: number }).swing !== undefined).length;
     assert.equal(c.peer.publishState(), false, 'no session: nothing to edit');
-    // A leader keeps its behaviour: it publishes whether or not its own instrument plays.
     assert.equal(a.peer.isLeader, true);
-    assert.equal(a.peer.publishState(), true, 'a stopped leader still publishes');
+    assert.equal(a.peer.publishState(), true, 'a leader publishes whether or not its instrument plays');
     a.clock.play({ at: now.t }); await flush(60);
-    assert.equal(a.peer.swing, 0.62);
+    assert.equal(c.peer.publishState(), false, 'unjoined');
+    now.t += 0.5; b.clock.play({ at: now.t }); c.clock.play({ at: now.t }); await flush(60);
     swingC = 0.66;
-    assert.equal(c.peer.publishState(), false, 'not playing in the running session');
+    assert.equal(c.peer.publishState(), false, 'a playing follower that never led');
     await flush(60);
-    assert.equal(swingBeats(), 0, 'no heartbeat.swing sent');
-    for (const t of [a, c]) assert.equal(t.peer.swing, 0.62, `${t.peer.id} keeps the session swing`);
-    for (const t of [a, c]) t.peer.stop();
+    assert.equal(swingBeats(h), 0, 'no heartbeat.swing sent');
+    rawSwing(h, 'c-synth', now, 0.7); await flush(60);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.62, `${t.peer.id} ignores a raw edit from C`);
+    // The ex-leader's raw edit is a session edit.
+    now.t += 0.5; a.clock.stop({ at: now.t }); await flush(80);
+    assert.deepEqual(leaderOf(a, b, c), ['b-bass']);
+    rawSwing(h, 'a-rhythm', now, 0.7); await flush(60);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.7, `${t.peer.id} applies the ex-leader's edit`);
+    for (const t of [a, b, c]) t.peer.stop();
+  });
+
+  test(`who led resets with the session: after the last stop and a new start, an earlier session's leader does not forward${sfx}`, async () => {
+    const now = { t: 11_400 };
+    let swing = 0.62;
+    const h = hub(), L = locks ? fakeLocks() : null;
+    const a = tab(h, 'a-rhythm', now, { locks: L, swing: () => swing }); await a.peer.start(); await flush(); now.t += 1;
+    const b = tab(h, 'b-bass', now, { locks: L, swing: () => swing }); await b.peer.start(); await flush(); now.t += 1;
+    const c = tab(h, 'c-synth', now, { locks: L }); await c.peer.start(); await flush();
+    a.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; b.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; a.clock.stop({ at: now.t }); await flush(80);
+    swing = 0.6; assert.equal(a.peer.publishState(), true, 'A led this session'); await flush(60);
+    now.t += 0.5; b.clock.stop({ at: now.t }); await flush(80);
+    for (const t of [a, b, c]) assert.equal(t.clock.transport.running, false, `${t.peer.id}: the session ended`);
+    // A new session (C's Play). Whoever led the end starts it (and so leads it); the other ex-leader did not.
+    const mark = h.log.length;
+    now.t += 5; c.clock.play({ at: now.t }); await flush(80);
+    for (const t of [a, b, c]) assert.equal(t.clock.transport.running, true, `${t.peer.id}: a new session`);
+    const ledNew = new Set(h.log.slice(mark).filter(m => m.type === 'state').map(m => m.from));
+    const old = [a, b].find(t => !ledNew.has(t.peer.id) && !t.peer.isLeader);
+    assert.ok(old, 'one of the earlier leaders did not lead the new session');
+    const sent = swingBeats(h, old.peer.id);
+    swing = 0.7; assert.equal(old.peer.publishState(), false, `${old.peer.id} led only the earlier session`);
+    await flush(60);
+    assert.equal(swingBeats(h, old.peer.id), sent);
+    rawSwing(h, old.peer.id, now, 0.7); await flush(60);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.6, `${t.peer.id} ignores the raw edit`);
+    for (const t of [a, b, c]) t.peer.stop();
   });
 
   test(`a swing edit during a handoff is not lost${sfx}`, async () => {
     const now = { t: 11_500 };
-    let swingC = 0.5;
-    const h = hub();
-    const L = locks ? fakeLocks() : null;
-    const a = tab(h, 'a-rhythm', now, { locks: L, swing: () => 0.62 }); await a.peer.start(); await flush();
-    now.t += 1;
-    const b = tab(h, 'b-bass', now, { locks: L }); await b.peer.start(); await flush();
-    now.t += 1;
-    const c = tab(h, 'c-synth', now, { locks: L, swing: () => swingC }); await c.peer.start(); await flush(60);
-    a.clock.play({ at: now.t }); await flush(60);
-    now.t += 0.5; b.clock.play({ at: now.t }); await flush(60);
-    now.t += 0.1; c.clock.play({ at: now.t }); await flush(60); // C plays: its edits are session edits
-    // A stops (the lead moves to B) while C edits swing: the edit crosses the handoff (it may reach A as it leaves).
-    now.t += 0.5; swingC = 0.7;
-    a.clock.stop({ at: now.t }); c.peer.publishState(); await flush(80);
-    assert.deepEqual(leaderOf(a, b, c), ['b-bass']);
+    let swingA = 0.62;
+    const { a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null, swingA: () => swingA });
+    for (const t of [a, b, c]) { t.clock.play({ at: now.t }); await flush(60); now.t += 0.1; }
+    now.t += 0.5; a.clock.stop({ at: now.t }); await flush(80);
+    assert.deepEqual(leaderOf(a, b, c), ['b-bass'], 'A is a stopped ex-leader');
+    // B stops (the lead moves to C) while A edits swing: the edit crosses the handoff.
+    now.t += 0.5; swingA = 0.7;
+    b.clock.stop({ at: now.t }); a.peer.publishState(); await flush(80);
+    assert.deepEqual(leaderOf(a, b, c), ['c-synth']);
     for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.7, `${t.peer.id}: the edit landed`);
     // And the other order: the edit first, the handoff on the same tick.
-    now.t += 1; a.clock.play({ at: now.t }); await flush(60);
-    now.t += 0.5; swingC = 0.58;
-    c.peer.publishState(); b.clock.stop({ at: now.t }); await flush(80);
-    assert.equal(leaderOf(a, b, c).length, 1);
+    now.t += 1; b.clock.play({ at: now.t }); await flush(60);
+    now.t += 0.5; swingA = 0.58;
+    a.peer.publishState(); c.clock.stop({ at: now.t }); await flush(80);
+    assert.deepEqual(leaderOf(a, b, c), ['b-bass']);
     for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.58, `${t.peer.id}: the second edit landed`);
     for (const t of [a, b, c]) t.peer.stop();
   });
-}
 
-// ---- Zeta (Rhythm #32 review): the leader side of the swing guard -------------------------------------------------
-// publishState() no longer forwards from a peer that is not playing in the running session; a leader also ignores
-// such a heartbeat.swing (from an older or misbehaving sender), raw on the wire.
-for (const locks of [false, true]) {
-  const sfx = locks ? ' (Web Locks)' : '';
-  test(`a leader ignores heartbeat.swing from a peer that is not playing in the running session${sfx}`, async () => {
-    const now = { t: 14_000 };
-    const { h, a, b, c } = await threeTabs(now, { locks: locks ? fakeLocks() : null, swingA: () => 0.62 });
-    a.clock.play({ at: now.t }); await flush(60);
-    a.peer.publishState(); await flush(60);
-    assert.deepEqual(leaderOf(a, b, c), ['a-rhythm']);
-    const hb = [...h.log].reverse().find(m => m.type === 'heartbeat' && m.from === 'b-bass')!;
-    const raw = h.channel();
-    let seq = hb.seq + 1000;
-    const inject = (playing: boolean) => raw.postMessage({ ...hb, seq: seq++, sentAt: now.t, playing, swing: 0.7 });
-    inject(false); await flush(60);
-    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.62, `${t.peer.id}: a stopped peer's edit is ignored`);
-    inject(true); await flush(60);
-    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.7, `${t.peer.id}: a playing peer's edit applies`);
-    raw.close();
-    for (const t of [a, b, c]) t.peer.stop();
-  });
-
-  // A leader whose app has no swing (ASTRID-like: no `swing` option) keeps the session swing it has: from a
-  // follower's edit when it leads from the start, carried when it leads by handoff. Its states never send 0 over it.
+  // A leader whose app has no swing (ASTRID-like: no `swing` option) leads by handoff: it carries the session swing
+  // and rebroadcasts it (not 0), and applies an ex-leader's edit. (One that leads from the start has no swing to
+  // keep: only an ex-leader edits, and there is none before a handoff.)
   test(`a leader with no swing option rebroadcasts the session swing it kept, not 0, and applies edits${sfx}`, async () => {
     const now = { t: 15_000 };
     const h = hub(), lk = locks ? fakeLocks() : null;
-    let swingB = 0.5;
+    let swingB = 0.6;
+    const b = tab(h, 'b-bass', now, { locks: lk, swing: () => swingB }); await b.peer.start(); await flush(); now.t += 1;
     const a = tab(h, 'a-rhythm', now, { locks: lk }); await a.peer.start(); await flush(); now.t += 1;
-    const c = tab(h, 'c-synth', now, { locks: lk }); await c.peer.start(); await flush(); now.t += 1;
-    const b = tab(h, 'b-bass', now, { locks: lk, swing: () => swingB }); await b.peer.start(); await flush();
+    const c = tab(h, 'c-synth', now, { locks: lk }); await c.peer.start(); await flush();
     const lastState = () => states(h).at(-1)!;
     /** A newcomer's hello makes the leader answer with `state`. */
     const newcomer = async (id: string) => { const d = tab(h, id, now, { locks: lk }); await d.peer.start(); await flush(60); d.peer.stop(); await flush(); };
-    for (const t of [a, c, b]) { t.clock.play({ at: now.t }); await flush(60); now.t += 0.25; }
-    assert.deepEqual(leaderOf(a, b, c), ['a-rhythm']);
-    swingB = 0.6; assert.equal(b.peer.publishState(), true); await flush(60);
-    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.6, `${t.peer.id}: B's edit via leader A`);
+    for (const t of [b, a, c]) { t.clock.play({ at: now.t }); await flush(60); now.t += 0.25; }
+    assert.deepEqual(leaderOf(a, b, c), ['b-bass']);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.6);
+    now.t += 0.5; b.clock.stop({ at: now.t }); await flush(80);
+    assert.deepEqual(leaderOf(a, b, c), ['a-rhythm'], 'handoff to A (no swing)');
+    assert.equal(lastState().from, 'a-rhythm'); assert.equal(lastState().swing, 0.6, 'A carries 0.6');
     await newcomer('d-1');
-    assert.equal(lastState().from, 'a-rhythm'); assert.equal(lastState().swing, 0.6, 'A (no swing) rebroadcasts 0.6');
+    assert.equal(lastState().from, 'a-rhythm'); assert.equal(lastState().swing, 0.6, 'A rebroadcasts 0.6');
+    swingB = 0.66; assert.equal(b.peer.publishState(), true); await flush(60);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.66, `${t.peer.id}: B's edit via leader A`);
+    await newcomer('d-2');
+    assert.equal(lastState().from, 'a-rhythm'); assert.equal(lastState().swing, 0.66, 'A rebroadcasts the edit');
     now.t += 0.5; a.clock.stop({ at: now.t }); await flush(80);
     assert.deepEqual(leaderOf(a, b, c), ['c-synth'], 'handoff to C (no swing)');
-    assert.equal(lastState().from, 'c-synth'); assert.equal(lastState().swing, 0.6, 'C carries 0.6');
-    await newcomer('d-2');
-    assert.equal(lastState().from, 'c-synth'); assert.equal(lastState().swing, 0.6, 'C rebroadcasts 0.6');
-    swingB = 0.66; assert.equal(b.peer.publishState(), true); await flush(60);
-    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.66, `${t.peer.id}: B's edit via leader C`);
     await newcomer('d-3');
-    assert.equal(lastState().from, 'c-synth'); assert.equal(lastState().swing, 0.66, 'C rebroadcasts the edit');
+    assert.equal(lastState().from, 'c-synth'); assert.equal(lastState().swing, 0.66, 'C carries and rebroadcasts 0.66');
+    swingB = 0.7; assert.equal(b.peer.publishState(), true); await flush(60);
+    for (const t of [a, b, c]) assert.equal(t.peer.swing, 0.7, `${t.peer.id}: B's edit via leader C`);
     for (const t of [a, b, c]) t.peer.stop();
   });
 }
