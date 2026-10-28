@@ -18,7 +18,7 @@ import { nextGridBeat } from './core/transport.js';
 import {
   readSwing, SWING_MAX, SWING_STRAIGHT, SWING_UNSET,
   DEFAULT_CAPABILITIES, DEFAULT_CHANNEL, LEADER_LOCK, envelope, parseMessage,
-  type AudioReadiness, type Capabilities, type MessageBody, type NcSyncMessage, type SnapshotMessage, type StateMessage,
+  type AudioReadiness, type Capabilities, type HeartbeatMessage, type MessageBody, type NcSyncMessage, type SnapshotMessage, type StateMessage,
 } from './protocol.js';
 
 /** Minimal BroadcastChannel shape (so tests and other transports can stand in). */
@@ -111,6 +111,9 @@ export interface NcSyncPeerOptions {
 }
 
 type Listener<T> = (value: T) => void;
+const sub = <T>(set: Set<Listener<T>>, l: Listener<T>) => { set.add(l); return () => { set.delete(l); }; };
+/** Call every listener (a copy, so one may unsubscribe while called). */
+const emit = <T>(set: Set<Listener<T>>, value: T) => { for (const l of [...set]) l(value); };
 type Rank = [number, number, number, string];
 /** Lexicographic: does rank `a` come before `b`? */
 const before = (a: Rank, b: Rank): boolean => {
@@ -221,10 +224,8 @@ export class NcSyncPeer implements ClockAuthority {
     if (this.grace) clearTimeout(this.grace);
     this.grace = null;
     this.stopWakeListeners?.(); this.stopWakeListeners = null;
-    this.yielding = true;
     this.leaving = true; // setLeader(false) beats once; that beat must not re-elect this tab
-    this.lockAbort?.abort(); this.lockAbort = null;
-    this.releaseLock?.(); this.releaseLock = null;
+    this.yieldLock();
     this.setLeader(false);
     this.send({ type: 'bye' });
     this.channel.onmessage = null;
@@ -237,19 +238,19 @@ export class NcSyncPeer implements ClockAuthority {
   }
 
   /** Hear role changes. Returns an unsubscribe function. */
-  onRole(listener: Listener<'leader' | 'follower'>): () => void { this.roleListeners.add(listener); return () => this.roleListeners.delete(listener); }
+  onRole(listener: Listener<'leader' | 'follower'>): () => void { return sub(this.roleListeners, listener); }
   /** Hear peer list changes. */
-  onPeers(listener: Listener<PeerInfo[]>): () => void { this.peerListeners.add(listener); return () => this.peerListeners.delete(listener); }
+  onPeers(listener: Listener<PeerInfo[]>): () => void { return sub(this.peerListeners, listener); }
   /** Hear snapshot slot actions from other peers. */
-  onSnapshot(listener: Listener<SnapshotMessage>): () => void { this.snapshotListeners.add(listener); return () => this.snapshotListeners.delete(listener); }
+  onSnapshot(listener: Listener<SnapshotMessage>): () => void { return sub(this.snapshotListeners, listener); }
   /** Hear every valid message from other peers (after dedupe). */
-  onMessage(listener: Listener<NcSyncMessage>): () => void { this.messageListeners.add(listener); return () => this.messageListeners.delete(listener); }
+  onMessage(listener: Listener<NcSyncMessage>): () => void { return sub(this.messageListeners, listener); }
   /**
    * Hear the session swing change (0.5 to 0.75): from the leader's `state`, or this peer's own while it leads.
    * Fires only when the value changes, and never for "unset", so it is safe to feed it straight into your swing
    * control. Returns an unsubscribe function.
    */
-  onSwing(listener: Listener<number>): () => void { this.swingListeners.add(listener); return () => this.swingListeners.delete(listener); }
+  onSwing(listener: Listener<number>): () => void { return sub(this.swingListeners, listener); }
   /** The session swing (0.5 to 0.75) from the latest `state` that set one, or null if no leader has set swing yet. */
   get swing(): number | null { return this.appliedSwing; }
   /**
@@ -278,7 +279,7 @@ export class NcSyncPeer implements ClockAuthority {
    * start the session (or to keep it, when a session stop is still pending).
    */
   requestStart(request: StartRequest): void {
-    if (!this.leader && !this.knownLeader()) this.becomeLeaderIfAlone();
+    this.becomeLeaderIfAlone();
     if (this.indep) {
       this.setMember(true, this.o.now());
       if (this.clock.transport.running) return; // Join on the shared grid
@@ -293,7 +294,7 @@ export class NcSyncPeer implements ClockAuthority {
    * `independentStop`) every Stop is a session stop for everyone again (without `all`), the 0.4.0 behaviour.
    */
   requestStop(request: StopRequest): void {
-    if (!this.leader && !this.knownLeader()) this.becomeLeaderIfAlone();
+    this.becomeLeaderIfAlone();
     if (this.indep) {
       const now = this.o.now();
       this.setMember(false, Math.max(now, request.at ?? now));
@@ -307,7 +308,7 @@ export class NcSyncPeer implements ClockAuthority {
   }
   /** ClockAuthority: local tempo change. */
   requestTempo(request: TempoRequest): void {
-    if (!this.leader && !this.knownLeader()) this.becomeLeaderIfAlone();
+    this.becomeLeaderIfAlone();
     if (this.leader) { this.decideTempo(request.bpm, request.atBeat, request.rampBeats); return; }
     this.send({ type: 'tempo', bpm: request.bpm, atBeat: request.atBeat, rampBeats: request.rampBeats });
   }
@@ -326,13 +327,8 @@ export class NcSyncPeer implements ClockAuthority {
       this.broadcastState();
       return;
     }
-    if (t.isPlayingAt(now) && t.stopTime === null) {
-      // Restart a running transport on the next bar line, from beat 0.
-      const bar = t.nextBar(t.beatAt(now + this.o.minLeadSeconds));
-      this.clock.commitStart(t.timeAt(bar), 0);
-    } else {
-      this.clock.commitStart(now + this.o.startLeadSeconds, 0);
-    }
+    // A running transport restarts on the next bar line, from beat 0.
+    this.clock.commitStart(t.isPlayingAt(now) && t.stopTime === null ? t.timeAt(t.nextBar(t.beatAt(now + this.o.minLeadSeconds))) : now + this.o.startLeadSeconds, 0);
     this.broadcastState();
   }
   /** A session stop for everyone: an older peer's Stop, or `all`. */
@@ -341,7 +337,7 @@ export class NcSyncPeer implements ClockAuthority {
     this.idleEnd = false;
     this.carriedSwing = null;
     this.clock.commitStop(at, all);
-    this.broadcastState({ ...(all ? { stopAll: true } : {}), ...(this.indep ? { endSession: true } : {}) });
+    this.broadcastState(all || undefined, this.indep || undefined);
     if (this.indep) { this.everyoneStopped(); this.setMember(false, at); }
   }
   /** Leader, independentStop: end the session when no instrument plays any more (older peers play while it runs). */
@@ -403,19 +399,20 @@ export class NcSyncPeer implements ClockAuthority {
     for (const p of this.peers.values()) { lo = Math.max(lo, p.capabilities.tempoRange[0]); hi = Math.min(hi, p.capabilities.tempoRange[1]); }
     return lo <= hi ? [lo, hi] : this.caps.tempoRange;
   }
-  private broadcastState(flags?: { stopAll?: true; endSession?: true }): void {
+  /** Flags are true or undefined (receivers test them for truthiness; JSON transports drop undefined). */
+  private broadcastState(stopAll?: true, endSession?: true): void {
     if (!this.leader) return;
     const own = this.o.swing();
-    const swing = this.editSwing ?? this.carriedSwing ?? (typeof own === 'number' && Number.isFinite(own) ? Math.min(SWING_MAX, Math.max(SWING_STRAIGHT, own)) : SWING_UNSET);
+    const swing = this.editSwing ?? this.carriedSwing ?? (Number.isFinite(own) ? Math.min(SWING_MAX, Math.max(SWING_STRAIGHT, own as number)) : SWING_UNSET);
     this.send({ type: 'state', clock: this.clock.toSnapshot(), swing, leaderApp: this.o.app,
-      ...(this.indep ? { independentStop: true } : {}), ...flags });
+      independentStop: this.indep || undefined, stopAll, endSession });
     this.noteSwing(swing); // after sending, so a listener that republishes cannot reorder states
   }
   private noteSwing(value: unknown): void {
     const swing = readSwing(value);
     if (swing === null || swing === this.appliedSwing) return;
     this.appliedSwing = swing;
-    for (const l of [...this.swingListeners]) l(swing);
+    emit(this.swingListeners, swing);
   }
 
   // ---- receiving --------------------------------------------------------------------
@@ -433,12 +430,12 @@ export class NcSyncPeer implements ClockAuthority {
         const independentStop = capabilities.independentStop === true;
         const playing = independentStop ? m.playing === true : null;
         this.peers.set(m.from, { id: m.from, app: m.app, capabilities, audio: m.audio,
-          hidden: m.type === 'heartbeat' ? m.hidden : false, leader: m.type === 'heartbeat' ? m.leader : false,
+          hidden: (m as HeartbeatMessage).hidden === true, leader: (m as HeartbeatMessage).leader === true, // not in hello
           joinedAt: m.joinedAt, lastSeen: this.o.now(), outputLatencyMs: m.outputLatencyMs, independentStop, playing });
         const memberChanged = !prev || prev.playing !== playing;
         if (memberChanged) this.emitPeers();
         if (memberChanged && playing === true) this.keepRunForJoin();
-        const edit = m.type === 'heartbeat' ? readSwing(m.swing) : null;
+        const edit = readSwing((m as HeartbeatMessage).swing); // heartbeat only
         if (edit !== null) { this.editSwing = edit; this.editAt = m.sentAt; if (this.leader) this.broadcastState(); }
         // Answer a newcomer: the leader with the clock, everyone with a heartbeat (so it knows who is here).
         if (m.type === 'hello') { if (this.leader) this.broadcastState(); this.sendHeartbeat(); }
@@ -459,7 +456,7 @@ export class NcSyncPeer implements ClockAuthority {
         const sender = this.peers.get(m.from);
         if (!sender) {
           const independentStop = m.independentStop === true;
-          this.peers.set(m.from, { id: m.from, app: m.leaderApp, capabilities: { ...DEFAULT_CAPABILITIES, ...(independentStop ? { independentStop } : {}) },
+          this.peers.set(m.from, { id: m.from, app: m.leaderApp, capabilities: { ...DEFAULT_CAPABILITIES, independentStop },
             audio: 'none', hidden: false, leader: true, joinedAt: m.sentAt, lastSeen: this.o.now(), outputLatencyMs: null,
             independentStop, playing: null });
           this.emitPeers();
@@ -485,11 +482,11 @@ export class NcSyncPeer implements ClockAuthority {
       }
       case 'transport': if (this.leader) { if (m.action === 'start') this.decideStart(); else this.decideStop(m.all ?? false); } break;
       case 'tempo': if (this.leader) this.decideTempo(m.bpm, m.atBeat, m.rampBeats); break;
-      case 'snapshot': for (const l of [...this.snapshotListeners]) l(m); break;
+      case 'snapshot': emit(this.snapshotListeners, m); break;
       case 'ping': this.send({ type: 'pong', id: m.id, receivedAt: this.o.now() }); break;
       default: break;
     }
-    for (const l of [...this.messageListeners]) l(m);
+    emit(this.messageListeners, m);
   }
 
   // ---- election ---------------------------------------------------------------------
@@ -521,16 +518,17 @@ export class NcSyncPeer implements ClockAuthority {
     }
     return false;
   }
+  /** Leave the lock queue and give up the lock (if held). */
+  private yieldLock(): void {
+    this.yielding = true;
+    this.lockAbort?.abort(); this.lockAbort = null;
+    const r = this.releaseLock; this.releaseLock = null; r?.();
+  }
   private elect(): void {
     if (!this.channel || this.leaving) return; // a leaving tab never re-elects itself
     const outranked = this.outranked();
     if (this.locks) {
-      if (outranked) {
-        this.yielding = true;
-        this.lockAbort?.abort(); this.lockAbort = null;
-        if (this.releaseLock) { const r = this.releaseLock; this.releaseLock = null; r(); }
-        return;
-      }
+      if (outranked) { this.yieldLock(); return; }
       this.yielding = false;
       if (this.releaseLock || this.lockAbort) return;
       const abort = new AbortController();
@@ -567,7 +565,7 @@ export class NcSyncPeer implements ClockAuthority {
     const p = this.peers.get(id);
     return p ? before(this.myRank(), this.peerRank(p)) : this.id < id;
   }
-  private knownLeader(): boolean { return [...this.peers.values()].some(p => p.leader); }
+  /** No peer known (so no leader known) and no Web Locks: lead at once. */
   private becomeLeaderIfAlone(): void { if (!this.peers.size && !this.locks && this.caps.canLead) this.setLeader(true); }
   private setLeader(on: boolean): void {
     if (on === this.leader) return;
@@ -576,7 +574,7 @@ export class NcSyncPeer implements ClockAuthority {
     // A handoff keeps the session swing: the new leader sends the swing it was following until its app publishes.
     this.carriedSwing = on && this.indep && this.clock.transport.running ? this.appliedSwing : null;
     if (on) { this.term += 1; this.broadcastState(); }
-    for (const l of [...this.roleListeners]) l(on ? 'leader' : 'follower');
+    emit(this.roleListeners, on ? 'leader' : 'follower');
     // A new leader whose own instrument plays on a stopped (or ending) session starts or keeps the run: a start
     // request sent to the old leader may have been dropped in the handoff.
     if (on && this.indep && this.clock.playing && !this.clock.transport.running) this.decideStart();
@@ -599,7 +597,7 @@ export class NcSyncPeer implements ClockAuthority {
     this.send({ type: 'heartbeat', app: this.o.app, leader: this.leader, audio: this.o.audio(), hidden: this.o.hidden(),
       outputLatencyMs: this.o.outputLatencyMs(), joinedAt: this.joinedAt, capabilities: this.caps, ...this.memberField(), swing });
   }
-  private emitPeers(): void { this.syncHeartbeat(); const list = [...this.peers.values()]; for (const l of [...this.peerListeners]) l(list); }
+  private emitPeers(): void { this.syncHeartbeat(); emit(this.peerListeners, [...this.peers.values()]); }
   /** Run the heartbeat timer only while joined and at least one other peer is known. */
   private syncHeartbeat(): void {
     const want = !!this.channel && this.peers.size > 0;
