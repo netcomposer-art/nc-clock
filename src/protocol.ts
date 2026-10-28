@@ -43,6 +43,12 @@ export interface Capabilities {
   sampleAccurate: boolean;
   /** Optional free-form modes the peer syncs in (e.g. `["generator", "arp"]`). */
   modes?: string[];
+  /**
+   * Stop is per instrument (nc-clock 0.4.0, `NcSyncPeer({ independentStop: true })`): the peer sends its own
+   * `playing` in `hello` and `heartbeat`, its Stop stops only itself, and the session (the shared transport) ends
+   * when the last instrument stops. Absent (older peers) means false: a Stop is a session stop, as in nc-clock 0.3.0.
+   */
+  independentStop?: boolean;
 }
 
 /** Fields on every message. */
@@ -62,11 +68,15 @@ export interface Envelope {
 }
 
 /** Join announcement. The leader answers with `state`. */
-export interface HelloMessage extends Envelope { type: 'hello'; app: string; version: string; capabilities: Capabilities; audio: AudioReadiness; outputLatencyMs: number | null; joinedAt: number }
+export interface HelloMessage extends Envelope { type: 'hello'; app: string; version: string; capabilities: Capabilities; audio: AudioReadiness; outputLatencyMs: number | null; joinedAt: number;
+  /** `independentStop` peers only: this instrument is playing (its own state, not the transport's). */
+  playing?: boolean }
 /** Leaving (best effort; liveness also comes from heartbeats and the leader lock). */
 export interface ByeMessage extends Envelope { type: 'bye' }
 /** About once a second. `hidden` peers may beat as rarely as once a minute (browser throttling). */
-export interface HeartbeatMessage extends Envelope { type: 'heartbeat'; app: string; leader: boolean; audio: AudioReadiness; hidden: boolean; outputLatencyMs: number | null; joinedAt: number; capabilities: Capabilities }
+export interface HeartbeatMessage extends Envelope { type: 'heartbeat'; app: string; leader: boolean; audio: AudioReadiness; hidden: boolean; outputLatencyMs: number | null; joinedAt: number; capabilities: Capabilities;
+  /** `independentStop` peers only: this instrument is playing. Sent at once when it changes, not only every second. */
+  playing?: boolean }
 /** Leader only: the full clock. Followers apply it as is. */
 export interface StateMessage extends Envelope {
   type: 'state'; clock: ClockSnapshot;
@@ -74,6 +84,11 @@ export interface StateMessage extends Envelope {
    * 0 means the leader does not set swing (what nc-clock 0.1.0 always sent). See {@link readSwing}. */
   swing: number;
   leaderApp: string; stopAll?: boolean;
+  /** Set by an `independentStop` leader: a plain transport stop here is a session end after the last instrument
+   * stopped, so receivers keep their own play state. Absent (older leaders): every stop stops every instrument. */
+  independentStop?: boolean;
+  /** With a stop: every instrument stops (an older peer's Stop, or `all`). Only `independentStop` leaders send it. */
+  endSession?: boolean;
 }
 /** Request (to the leader) to start or stop. */
 export interface TransportMessage extends Envelope { type: 'transport'; action: 'start' | 'stop'; atBeat?: number; all?: boolean }
