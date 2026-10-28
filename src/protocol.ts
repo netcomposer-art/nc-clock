@@ -76,7 +76,10 @@ export interface ByeMessage extends Envelope { type: 'bye' }
 /** About once a second. `hidden` peers may beat as rarely as once a minute (browser throttling). */
 export interface HeartbeatMessage extends Envelope { type: 'heartbeat'; app: string; leader: boolean; audio: AudioReadiness; hidden: boolean; outputLatencyMs: number | null; joinedAt: number; capabilities: Capabilities;
   /** `independentStop` peers only: this instrument is playing. Sent at once when it changes, not only every second. */
-  playing?: boolean }
+  playing?: boolean;
+  /** A session swing edit from a peer that does not lead (`publishState()`): the leader applies it, and every peer
+   *  keeps it until a `state` carries it, so a new leader applies it if the lead moved first. */
+  swing?: number }
 /** Leader only: the full clock. Followers apply it as is. */
 export interface StateMessage extends Envelope {
   type: 'state'; clock: ClockSnapshot;

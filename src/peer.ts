@@ -158,6 +158,9 @@ export class NcSyncPeer implements ClockAuthority {
   private idleEnd = false;
   /** Session swing carried over a handoff until this app publishes its own (independentStop only). */
   private carriedSwing: number | null = null;
+  /** A session swing edit (a follower's publishState) not yet seen in a `state`, and when it was sent. */
+  private editSwing: number | null = null;
+  private editAt = 0;
   private readonly indep: boolean;
   private roleListeners = new Set<Listener<'leader' | 'follower'>>();
   private peerListeners = new Set<Listener<PeerInfo[]>>();
@@ -256,10 +259,19 @@ export class NcSyncPeer implements ClockAuthority {
   /** The session swing (0.5 to 0.75) from the latest `state` that set one, or null if no leader has set swing yet. */
   get swing(): number | null { return this.appliedSwing; }
   /**
-   * Leader only: send `state` again now, e.g. after a swing edit when the transport did not change. Returns true
-   * if it was sent, false on a follower (a follower's swing is local until the leader's next `state`).
+   * After a swing edit: the leader sends `state` again now; a follower sends its swing to the leader as a session
+   * edit (in a `heartbeat`), so the edit reaches the session whoever leads. Returns false when not joined (or a
+   * follower without a swing).
    */
-  publishState(): boolean { if (!this.leader || !this.channel) return false; this.carriedSwing = null; this.broadcastState(); return true; }
+  publishState(): boolean {
+    if (!this.channel) return false;
+    if (this.leader) { this.carriedSwing = this.editSwing = null; this.broadcastState(); return true; }
+    const swing = readSwing(this.o.swing());
+    if (swing === null) return false;
+    this.editSwing = swing; this.editAt = this.o.now();
+    this.sendHeartbeat(swing);
+    return true;
+  }
 
   /** Send a snapshot slot action (`recall` is idempotent; receivers never echo it). */
   sendSnapshot(op: SnapshotMessage['op'], slot: number, extra: { atBeat?: number; glide?: SnapshotMessage['glide'] } = {}): void {
@@ -404,7 +416,7 @@ export class NcSyncPeer implements ClockAuthority {
   private broadcastState(): void {
     if (!this.leader) return;
     const own = this.o.swing();
-    const swing = this.carriedSwing ?? (typeof own === 'number' && Number.isFinite(own) ? Math.min(SWING_MAX, Math.max(SWING_STRAIGHT, own)) : SWING_UNSET);
+    const swing = this.editSwing ?? this.carriedSwing ?? (typeof own === 'number' && Number.isFinite(own) ? Math.min(SWING_MAX, Math.max(SWING_STRAIGHT, own)) : SWING_UNSET);
     this.send({ type: 'state', clock: this.clock.toSnapshot(), swing, leaderApp: this.o.app, ...(this.stopAll ? { stopAll: true } : {}),
       ...(this.indep ? { independentStop: true } : {}), ...(this.endingSession ? { endSession: true } : {}) });
     this.noteSwing(swing); // after sending, so a listener that republishes cannot reorder states
@@ -436,6 +448,8 @@ export class NcSyncPeer implements ClockAuthority {
         const memberChanged = !prev || prev.playing !== playing;
         if (memberChanged) this.emitPeers();
         if (memberChanged && playing === true) this.keepRunForJoin();
+        const edit = m.type === 'heartbeat' ? readSwing(m.swing) : null;
+        if (edit !== null) { this.editSwing = edit; this.editAt = m.sentAt; if (this.leader) this.broadcastState(); }
         // Answer a newcomer: the leader with the clock, everyone with a heartbeat (so it knows who is here).
         if (m.type === 'hello') { if (this.leader) this.broadcastState(); this.sendHeartbeat(); }
         this.elect();
@@ -463,6 +477,8 @@ export class NcSyncPeer implements ClockAuthority {
         const wasRunning = this.clock.transport.running;
         this.clock.applySnapshot(m.clock);
         this.noteSwing(m.swing);
+        // A pending swing edit is done once a state carries it (or the leader has moved on since).
+        if (this.editSwing !== null && (m.swing === this.editSwing || m.sentAt - this.editAt > 0.25)) this.editSwing = null;
         if (m.stopAll) this.clock.commitStop(m.clock.stopTime ?? this.o.now(), true);
         if (this.indep && !this.clock.transport.running) {
           if (!m.independentStop || m.endSession || m.stopAll) {
@@ -593,9 +609,9 @@ export class NcSyncPeer implements ClockAuthority {
     if (changed) { this.emitPeers(); this.elect(); this.endSessionIfIdle(); }
     this.sendHeartbeat();
   }
-  private sendHeartbeat(): void {
+  private sendHeartbeat(swing?: number): void {
     this.send({ type: 'heartbeat', app: this.o.app, leader: this.leader, audio: this.o.audio(), hidden: this.o.hidden(),
-      outputLatencyMs: this.o.outputLatencyMs(), joinedAt: this.joinedAt, capabilities: this.caps, ...this.memberField() });
+      outputLatencyMs: this.o.outputLatencyMs(), joinedAt: this.joinedAt, capabilities: this.caps, ...this.memberField(), swing });
   }
   private emitPeers(): void { this.syncHeartbeat(); const list = [...this.peers.values()]; for (const l of [...this.peerListeners]) l(list); }
   /** Run the heartbeat timer only while joined and at least one other peer is known. */
