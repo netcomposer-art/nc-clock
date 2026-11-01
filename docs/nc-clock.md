@@ -82,13 +82,21 @@ a `sampleIfNotReady()` right after it in the same task read the same stamp, and 
 yet is stuck: it falls back to `currentTime − outputLatency`, as for placeholders (once ready, a stuck stamp keeps
 the anchor). **Wait for `ready` before the first scheduling**: until then
 `offset` is only a guess. `ready` is a plain read; to get there quickly, call `mapper.sampleIfNotReady()` from
-a short retry loop (it takes a sample only when the output timestamp is new, and returns `ready`). The
-background timer gets there too, every `intervalMs`. If a browser with the timestamp API gives nothing real for 500 ms, the mapper falls back
+a short retry loop (it takes a sample only when the output timestamp is new, and returns `ready`). A started
+mapper gets there on its own: while the context runs and it isn't ready, it samples every `warmIntervalMs` (5 ms)
+instead of every `intervalMs`, so it is ready a few output callbacks after the context starts or resumes. If a browser with the timestamp API gives nothing real for 500 ms, the mapper falls back
 to `currentTime − outputLatency`, as it does where the API is missing.
+
+The first real stamps after a start or a resume can also be off, by 10–90 ms for one to three callbacks (seen in
+Chrome on the Studio's first Play, after a resume, so `contextTime` is already past 3 ms). So the three samples
+must agree: `ready` turns true once three real readings lie within 2 ms of one of them, and the readings outside
+those are dropped, so the median is the agreeing ones'. Readings from `currentTime − outputLatency` (no real
+stamp) only count, as before, and a full set of `samples` that never agreed is ready on its median. Step
+detection waits for `ready`: warm-up readings are not device clock steps.
 
 Once true, `ready` stays true across a confirmed device clock step or a revert (the samples move with the step,
 so it reads true inside `onStep` too), and across a statechange where the context clock kept pace with wall time
-(within 10 ms). It goes false, and takes three new real samples, only when the anchor is invalid: after an output
+(within 10 ms). It goes false, and takes three new agreeing samples, only when the anchor is invalid: after an output
 device change (`sinkchange`), or on resume after the context clock stood still (a real suspend freezes
 `currentTime` while wall time runs on). While the context isn't running the samples are kept and nothing samples.
 

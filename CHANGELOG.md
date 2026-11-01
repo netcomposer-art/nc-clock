@@ -35,6 +35,16 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
   show it matters.
 
 ### Fixed
+- `AudioClockMapper.ready` needs three real readings that agree (within 2 ms of one of them), and drops the readings
+  outside them. The first output timestamps after a context starts or resumes can be 10–90 ms off for one to three
+  callbacks (contextTime already past the 3 ms placeholder guard after a resume); any three made it ready, so the
+  first beat after the Studio's first Play landed up to tens of ms early or late. Readings from
+  `currentTime − outputLatency` count as before; a full set of `samples` that never agrees is ready on its median.
+  `checkStep()` does nothing before `ready`. Found in NetComposer Studio's first-Play measurement.
+- A started mapper warms up on its own: while the context runs and it isn't ready (after `start()`, a resume that
+  re-measures, or a sinkchange), it samples every `warmIntervalMs` (new option, default 5 ms, `0` = off) instead of
+  every `intervalMs` (250 ms), so it is ready a few output callbacks after the context runs instead of ~0.5–0.75 s
+  later. The fast sampling stops once ready and while the context isn't running.
 - `AudioClockMapper.sample()` keeps one sample per output timestamp. `start()` and the first `sampleIfNotReady()`
   in the same task read the same stamp, and it counted twice, so `ready` came after two real readings instead of
   three. Found by Olive (OLIVE Bass).
