@@ -449,6 +449,42 @@ export class AudioClockMapper {
     return this.ready;
   }
 
+  /**
+   * True when a start can be committed on this mapping now: the context runs, the mapper is {@link ready} (sampling
+   * once if not), and the latest output timestamp, when the browser gives a real one, agrees with {@link offset}
+   * (less the user offset) within 2 ms. Right after a start or resume a reading or two can still be tens of ms off
+   * while three agreeing ones already made `ready`; bar 1 committed then lands off by that much.
+   */
+  settledNow(): boolean {
+    if (this.ctx.state !== 'running' || !this.sampleIfNotReady()) return false;
+    const ts = typeof this.ctx.getOutputTimestamp === 'function' ? this.ctx.getOutputTimestamp() : null;
+    if (!ts || !ts.contextTime || !ts.performanceTime) return true;
+    if (!Number.isFinite(ts.contextTime) || !Number.isFinite(ts.performanceTime)) return true;
+    const raw = ts.contextTime - (this.timeOrigin + ts.performanceTime) / 1000;
+    return Math.abs(raw - (this.offset - this.userOffsetMs / 1000)) <= READY_SPREAD;
+  }
+
+  /**
+   * A first Play's wait (NcSyncPeer `startGate`): null when {@link settledNow}, else a promise that resolves true
+   * once it is (checked every 2 ms) or false after `timeoutMs` (default 1500: a context that won't run, or a clock
+   * that won't settle, still starts).
+   *
+   * @example
+   * new NcSyncPeer({ ..., startGate: () => mapper?.whenSettled() ?? null });
+   */
+  whenSettled(timeoutMs = 1500): Promise<boolean> | null {
+    if (this.settledNow()) return null;
+    const until = this.perfNow() + timeoutMs;
+    return new Promise(resolve => {
+      const check = () => {
+        if (this.settledNow()) resolve(true);
+        else if (this.perfNow() >= until) resolve(false);
+        else setTimeout(check, 2);
+      };
+      setTimeout(check, 2);
+    });
+  }
+
   /** contextTime − sharedTime (seconds), median of recent samples, plus the user offset. */
   get offset(): number {
     if (!this.offsets.length) this.sample();

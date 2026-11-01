@@ -6,6 +6,12 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 ## [Unreleased]
 
 ### Added
+- First Play waits for the audio (from the NetComposer Studio's first-Play fix): `NcSyncPeer` option `startGate`
+  (with `gatedStartLeadSeconds`, default 0.3). A start while the transport is stopped, this peer's own Play or, while
+  it leads, a follower's request, waits on it when it returns a promise (a Stop meanwhile cancels the start), and a
+  leader then commits bar 1 at max(press + 0.3 s, now + `startLeadSeconds`). Without it, or when it returns null,
+  starts are unchanged. `AudioClockMapper.settledNow()` and `whenSettled(timeoutMs)` give the gate: the context runs,
+  the mapper is ready, and the latest output timestamp agrees within 2 ms.
 - `AudioClockMapper` treats a step that comes back within `stepRevertMs` (new option, default 200 ms of audio clock
   time, `0` = off) as a transient: the confirmed step is still applied at once (~20 ms confirmation unchanged),
   but provisionally; when the readings return to the pre-step anchor inside the window, that anchor is restored

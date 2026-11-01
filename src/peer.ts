@@ -88,6 +88,16 @@ export interface NcSyncPeerOptions {
   startLeadSeconds?: number;
   /** Least lead for any scheduled change (s). Default 0.1. */
   minLeadSeconds?: number;
+  /**
+   * A start's wait for this tab's audio (the first Play: the context resumes and the clock mapper re-measures).
+   * Called on a start while the transport is stopped: this peer's own Play, and while it leads a follower's request.
+   * Return null to start at once (as without it), or a promise: the start waits for it to settle (a Stop meanwhile
+   * cancels it), and a leader then lands bar 1 at least `gatedStartLeadSeconds` after the press and
+   * `startLeadSeconds` after the wait. Typical: `() => mapper?.whenSettled() ?? null` (AudioClockMapper).
+   */
+  startGate?: () => PromiseLike<unknown> | null;
+  /** With `startGate`: a start that waited lands bar 1 at least this long after the press (s). Default 0.3. */
+  gatedStartLeadSeconds?: number;
   /** Without Web Locks: listen this long after joining before claiming the lead, so a newcomer learns who is
    * already there instead of briefly competing with the leader (ms). Default 300. */
   joinGraceMs?: number;
@@ -112,6 +122,8 @@ export class NcSyncPeer implements ClockAuthority {
   /** Other live peers by id. */
   readonly peers = new Map<string, PeerInfo>();
   private readonly o: Required<Omit<NcSyncPeerOptions, 'channel' | 'locks' | 'capabilities' | 'instanceId'>>;
+  // Each start that waits on the start gate takes a number; a newer start or any stop makes it stale.
+  private startWaits = 0;
   private readonly caps: Capabilities;
   private readonly clock: NcClock;
   private channel: ChannelLike | null = null;
@@ -153,6 +165,8 @@ export class NcSyncPeer implements ClockAuthority {
       hiddenPeerTimeoutMs: options.hiddenPeerTimeoutMs ?? 65000,
       startLeadSeconds: options.startLeadSeconds ?? 0.2, minLeadSeconds: options.minLeadSeconds ?? 0.1,
       joinGraceMs: options.joinGraceMs ?? 300,
+      startGate: options.startGate ?? (() => null),
+      gatedStartLeadSeconds: options.gatedStartLeadSeconds ?? 0.3,
     };
   }
 
@@ -221,14 +235,34 @@ export class NcSyncPeer implements ClockAuthority {
     this.send({ type: 'snapshot', op, slot, ...extra });
   }
 
-  /** ClockAuthority: local Play. */
+  /** ClockAuthority: local Play. While stopped it first waits on `startGate`, if one is set and not ready. */
   requestStart(request: StartRequest): void {
+    if (this.gated(pressedAt => this.startNow(request, pressedAt))) return;
+    this.startNow(request);
+  }
+  private startNow(request: StartRequest, pressedAt?: number): void {
     if (!this.leader && !this.knownLeader()) this.becomeLeaderIfAlone();
-    if (this.leader) { this.decideStart(); return; }
+    if (this.leader) { this.decideStart(pressedAt); return; }
     this.send({ type: 'transport', action: 'start', ...(request.beat !== undefined ? { atBeat: request.beat } : {}) });
+  }
+  /**
+   * A start while stopped with a `startGate` that is not ready: wait on it, then `go(pressedAt)` unless a newer start
+   * or a stop came meanwhile. True when it waits; false to start at once.
+   */
+  private gated(go: (pressedAt: number) => void): boolean {
+    const mine = ++this.startWaits;
+    if (this.clock.transport.running) return false;
+    let wait: PromiseLike<unknown> | null = null;
+    try { wait = this.o.startGate(); } catch { wait = null; }
+    if (!wait || typeof wait.then !== 'function') return false;
+    const pressedAt = this.o.now();
+    const done = () => { if (mine === this.startWaits) go(pressedAt); };
+    wait.then(done, done);
+    return true;
   }
   /** ClockAuthority: local Stop. */
   requestStop(request: StopRequest): void {
+    this.startWaits++;
     if (!this.leader && !this.knownLeader()) this.becomeLeaderIfAlone();
     if (this.leader) { this.decideStop(request.all ?? false); return; }
     this.send({ type: 'transport', action: 'stop', all: request.all ?? false });
@@ -241,14 +275,16 @@ export class NcSyncPeer implements ClockAuthority {
   }
 
   // ---- leader decisions -------------------------------------------------------------
-  private decideStart(): void {
+  private decideStart(pressedAt?: number): void {
     const t = this.clock.transport, now = this.o.now();
     if (t.isPlayingAt(now) && t.stopTime === null) {
       // Restart a running transport on the next bar line, from beat 0.
       const bar = t.nextBar(t.beatAt(now + this.o.minLeadSeconds));
       this.clock.commitStart(t.timeAt(bar), 0);
     } else {
-      this.clock.commitStart(now + this.o.startLeadSeconds, 0);
+      // A start that waited on the start gate: the gated lead from the press, and never under the usual lead now.
+      const lead = now + this.o.startLeadSeconds;
+      this.clock.commitStart(pressedAt === undefined ? lead : Math.max(pressedAt + this.o.gatedStartLeadSeconds, lead), 0);
     }
     this.broadcastState();
   }
@@ -330,7 +366,12 @@ export class NcSyncPeer implements ClockAuthority {
         if (m.stopAll) this.clock.commitStop(m.clock.stopTime ?? this.o.now(), true);
         break;
       }
-      case 'transport': if (this.leader) { if (m.action === 'start') this.decideStart(); else this.decideStop(m.all ?? false); } break;
+      case 'transport': if (this.leader) {
+        if (m.action === 'start') {
+          // A follower's Play: wait on this leader's start gate too (the Studio's shared context and mapper).
+          if (!this.gated(pressedAt => { if (this.leader) this.decideStart(pressedAt); })) this.decideStart();
+        } else { this.startWaits++; this.decideStop(m.all ?? false); }
+      } break;
       case 'tempo': if (this.leader) this.decideTempo(m.bpm, m.atBeat, m.rampBeats); break;
       case 'snapshot': for (const l of [...this.snapshotListeners]) l(m); break;
       case 'ping': this.send({ type: 'pong', id: m.id, receivedAt: this.o.now() }); break;
