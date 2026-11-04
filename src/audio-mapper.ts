@@ -64,6 +64,20 @@ export interface AudioClockMapperOptions {
    * step is final, as in 0.3.0).
    */
   stepRevertMs?: number;
+  /**
+   * Hold the mapping while this returns true (default: never). For one mapper shared by several schedulers on one
+   * context (the NetComposer Studio: every instrument renders on its one AudioContext), pass "the transport is
+   * running". While held and {@link AudioClockMapper.ready}, {@link AudioClockMapper.offset} stays at the estimate it
+   * had when the hold began: the background samples and confirmed device clock steps still move the estimate, but
+   * not the mapping, and `onStep` stays quiet (nothing in force moved, so there is nothing to re-time). Every
+   * scheduler then maps a beat to the same context time whenever it reads the offset, so a step (an underrun that
+   * leaves the context clock behind wall time) can no longer reach one instrument's beat and not another's. The cost
+   * is that the audio may fall behind (or ahead of) wall time by the steps it held through, until the hold ends; when
+   * it ends the offset is the estimate again. An invalid anchor (an output device change, a resume after the context
+   * clock stood still) drops the hold's value; the mapping held from then on is the new one, once ready. Between tabs
+   * (one context each) don't hold: there the re-anchor is what keeps the tabs together.
+   */
+  hold?: () => boolean;
 }
 
 /** A confirmed device clock step, as handed to {@link AudioClockMapper.onStep} listeners. */
@@ -161,7 +175,7 @@ export class AudioClockMapper {
   private lastLatencyRead = -Infinity;
   private latency: number | null = null;
   /** Re-measure from scratch: the anchor is invalid (a new output device, or a context clock that stood still). */
-  private readonly onSink = () => { this.offsets.length = 0; this.settled = false; this.revertUntil = -Infinity; this.clearPending(); this.waitSince = null; this.readLatency(true); this.sample(); this.warm(); };
+  private readonly onSink = () => { this.held = null; this.offsets.length = 0; this.settled = false; this.revertUntil = -Infinity; this.clearPending(); this.waitSince = null; this.readLatency(true); this.sample(); this.warm(); };
   // Context time and perfNow (ms) when the context stopped running (null: running, or never seen stopping).
   private pausedCtx: number | null = null;
   private pausedWall = 0;
@@ -215,6 +229,9 @@ export class AudioClockMapper {
   // Scratch for the median (no allocation on the step check or `offset` read).
   private readonly scratch: number[] = [];
   private readonly stepListeners = new Set<(step: ClockStep) => void>();
+  private readonly holdWhile: (() => boolean) | null;
+  // The base offset in force while a hold is on (null: no hold, or not ready since it began).
+  private held: number | null = null;
   /** Manual offset in ms (the ±250 ms per-tab slider). */
   userOffsetMs: number;
 
@@ -233,7 +250,21 @@ export class AudioClockMapper {
     this.stepCheckMs = options.stepCheckMs ?? 50;
     this.stepConfirmMs = Math.max(0, options.stepConfirmMs ?? 10);
     this.stepRevert = Math.max(0, options.stepRevertMs ?? 200) / 1000;
+    this.holdWhile = options.hold ?? null;
   }
+
+  /**
+   * The base offset in force under a hold (see the `hold` option), else null. The hold's value is the estimate when
+   * the hold is first seen on with the mapper ready; it is read before any sample or step moves the estimate.
+   */
+  private heldBase(): number | null {
+    if (!this.holdWhile || !this.holdWhile()) { this.held = null; return null; }
+    if (this.held === null && this.settled && this.offsets.length) this.held = this.median();
+    return this.held;
+  }
+
+  /** True while a hold keeps {@link offset} fixed (the `hold` option is on and the mapper was ready under it). */
+  get holding(): boolean { return this.heldBase() !== null; }
 
   /** Lasting device clock re-anchors so far (a reverted transient is not counted). */
   get reanchors(): number { return this.stepCount; }
@@ -286,6 +317,8 @@ export class AudioClockMapper {
    * step outside a window opens one (saving the anchor), later steps inside it don't extend it.
    */
   private reanchor(raw: number, base: number, back: boolean): boolean {
+    // A hold keeps the mapping in force: the estimate moves below, the offset doesn't, so no listener re-times.
+    const quiet = this.heldBase() !== null;
     const now = this.ctx.currentTime;
     const open = now <= this.revertUntil;
     let event: ClockStep;
@@ -310,7 +343,7 @@ export class AudioClockMapper {
       this.stepCount++;
       event = { stepSeconds: raw - base, confirmedAt: now, reanchors: this.stepCount, revert: false };
     }
-    for (const l of [...this.stepListeners]) l(event);
+    if (!quiet) for (const l of [...this.stepListeners]) l(event);
     return true;
   }
 
@@ -351,6 +384,7 @@ export class AudioClockMapper {
   sample(): boolean {
     const ctx = this.ctx;
     if (ctx.state !== 'running') return false;
+    this.heldBase(); // a hold that just began takes the estimate from before this sample
     this.readLatency(false);
     let offset: number | null = null;
     let real = false;
@@ -461,7 +495,7 @@ export class AudioClockMapper {
     if (!ts || !ts.contextTime || !ts.performanceTime) return true;
     if (!Number.isFinite(ts.contextTime) || !Number.isFinite(ts.performanceTime)) return true;
     const raw = ts.contextTime - (this.timeOrigin + ts.performanceTime) / 1000;
-    return Math.abs(raw - (this.offset - this.userOffsetMs / 1000)) <= READY_SPREAD;
+    return Math.abs(raw - this.estimate()) <= READY_SPREAD;
   }
 
   /**
@@ -485,11 +519,18 @@ export class AudioClockMapper {
     });
   }
 
-  /** contextTime − sharedTime (seconds), median of recent samples, plus the user offset. */
+  /**
+   * contextTime − sharedTime (seconds): the median of recent samples (under a hold, its value when the hold began),
+   * plus the user offset.
+   */
   get offset(): number {
     if (!this.offsets.length) this.sample();
-    const base = this.offsets.length ? this.median() : this.ctx.currentTime - this.sharedNow();
-    return base + this.userOffsetMs / 1000;
+    return (this.heldBase() ?? this.estimate()) + this.userOffsetMs / 1000;
+  }
+
+  /** The estimate without the user offset: the median of the kept samples (before any, `currentTime − now`). */
+  private estimate(): number {
+    return this.offsets.length ? this.median() : this.ctx.currentTime - this.sharedNow();
   }
 
   /** Shared time (s) → context time (s). */

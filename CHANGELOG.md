@@ -6,6 +6,14 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 ## [Unreleased]
 
 ### Added
+- `AudioClockMapper` option `hold: () => boolean` and getter `holding`: while the hold is on and the mapper is ready,
+  `offset` stays at the estimate it had when the hold began. Samples and confirmed device clock steps still move the
+  estimate (`reanchors` counts them, `settledNow()` judges it), but not the mapping, and `onStep` stays quiet; when the
+  hold ends the offset is the estimate again. An output device change or a resume after the clock stood still drops
+  the held value (held again on the new anchor once ready). For one mapper shared on one context: the NetComposer
+  Studio holds while its transport runs, so an underrun step (the context clock falls behind wall time, 10–80 ms in
+  headless Chrome) can't reach one instrument's beat and not another's (Rhythm and Bass were 1,787 and 1,934 samples
+  apart at 44.1 kHz, ~40 ms). Default: no hold, as before (across tabs the re-anchor keeps the tabs together).
 - First Play waits for the audio (from the NetComposer Studio's first-Play fix): `NcSyncPeer` option `startGate`
   (with `gatedStartLeadSeconds`, default 0.3). A start while the transport is stopped, this peer's own Play or, while
   it leads, a follower's request, waits on it when it returns a promise (a Stop meanwhile cancels the start), and a
