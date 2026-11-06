@@ -29,8 +29,7 @@ test("BlockFrame: Chrome's repeated frame (once, then four in a row) is placed w
   assert.equal(bf.resyncs, 0);
 });
 
-test('BlockFrame: a frame reported a block ahead, then the right one again, keeps the count', () => {
-  // Ahead is believed (frames could really have been skipped), so the next, lower report reads as stale.
+test('BlockFrame: a report ahead of the count is believed (one block really skipped)', () => {
   const bf = new BlockFrame();
   assert.deepEqual(run([0, Q, 2 * Q, 4 * Q, 5 * Q], bf), [0, Q, 2 * Q, 4 * Q, 5 * Q]);
   assert.equal(bf.resyncs, 1);
