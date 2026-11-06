@@ -6,6 +6,11 @@ The NC Sync protocol has its own major version (`proto: "nc-sync/1"`); see docs/
 ## [Unreleased]
 
 ### Added
+- `BlockFrame` (core, AudioWorklet safe): the frame a render quantum really starts on. Under load Chrome sometimes
+  hands `process()` the last quantum's `currentFrame` again (once or a few times in a row), then the right one; a
+  worklet that schedules from it misses a step, plays the one before twice (128 frames late), or leaves a hole in a
+  ring. `at(currentFrame, frames)` counts blocks itself and believes the reported frame only on a real discontinuity
+  (ahead of the count, or behind it for longer than any stale run). From the Studio's Grab fix (nc-studio #88).
 - `AudioClockMapper` option `hold: () => boolean` and getter `holding`: while the hold is on and the mapper is ready,
   `offset` stays at the estimate it had when the hold began. Samples and confirmed device clock steps still move the
   estimate (`reanchors` counts them, `settledNow()` judges it), but not the mapping, and `onStep` stays quiet; when the

@@ -131,6 +131,7 @@ Everything is exported from `@netcomposer/nc-clock`. The pure core is also at `@
 | `shiftSnapshot(snap, offsetSeconds, timebase)` | Move a snapshot to another timeline (e.g. shared time → AudioContext time). |
 | `validateSnapshot(x)` | Throws on a malformed snapshot. |
 | `nextGridBeat(beat, grid, strict?)`, `floorBeat`, `clampBpm` | Grid helpers. |
+| `new BlockFrame()` | For an AudioWorklet's `process()`: `at(currentFrame, frames = 128)` is the frame the block really starts on. Chrome sometimes reports the last block's `currentFrame` again under load; the count goes on by itself and believes the report only on a real discontinuity (ahead of the count, or behind it for longer than any stale run). `next(currentFrame)` (now, between blocks), `stale`, `resyncs`, `reset()`. |
 | `DEFAULT_METER`, `SNAPSHOT_FORMAT`, `SNAPSHOT_VERSION`, `NC_CLOCK_VERSION` | Constants. |
 
 ### Browser adapters
