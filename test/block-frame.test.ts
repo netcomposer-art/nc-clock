@@ -22,7 +22,7 @@ test('BlockFrame: the first block believes its frame, wherever it is', () => {
 
 test("BlockFrame: Chrome's repeated frame (once, then four in a row) is placed where the block really is", () => {
   const bf = new BlockFrame();
-  // Truth: 0, Q, 2Q ... Chrome reports Q twice, then 3Q (the jump), then 5Q four times, then 9Q.
+  // Truth: 0, Q, 2Q ... Chrome reports Q twice, then 3Q (the jump), then 5Q five times, then 10Q.
   const got = run([0, Q, Q, 3 * Q, 4 * Q, 5 * Q, 5 * Q, 5 * Q, 5 * Q, 5 * Q, 10 * Q], bf);
   assert.deepEqual(got, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(b => b * Q));
   assert.equal(bf.stale, 5);
